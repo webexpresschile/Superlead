@@ -9,6 +9,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Search, Download, Target, Loader2, ExternalLink, Zap, X, Play } from 'lucide-react'
 
+const ADSTERRA_SCRIPT = `
+<!-- Adsterra ad placeholder -->
+<div style="width:300px;height:250px;margin:0 auto;">
+  <iframe
+    src="about:blank"
+    style="width:300px;height:250px;border:none;"
+    title="Ad"
+    sandbox="allow-scripts allow-same-origin"
+  ></iframe>
+  <p style="font-size:10px;color:#999;text-align:center;margin-top:2px;">Publicidad</p>
+</div>
+`
+
 interface Lead {
   id: string
   name: string
@@ -42,11 +55,12 @@ export default function Dashboard() {
     limit: 50,
     used_today: 0,
     daily_limit: 7,
+    base_daily: 7,
   })
   const [adsWatched, setAdsWatched] = useState(0)
   const [showAdModal, setShowAdModal] = useState(false)
   const [adWatching, setAdWatching] = useState(false)
-  const [adCountdown, setAdCountdown] = useState(5) // seconds (simulated ad)
+  const [adCountdown, setAdCountdown] = useState(15)
   const [adMessage, setAdMessage] = useState('')
 
   useEffect(() => {
@@ -73,28 +87,33 @@ export default function Dashboard() {
     if (!token) return
     const { data } = await supabase
       .from('users')
-      .select('credits_used, credits_limit, credits_used_today, daily_limit, ads_watched_today')
+      .select('credits_used, credits_limit, credits_used_today, daily_limit, ads_watched_today, ads_extra_daily')
       .eq('auth_id', user?.id)
       .single()
     if (data) {
+      const baseDaily = data.daily_limit ?? 7
+      const adExtra = data.ads_extra_daily ?? 0
       setCredits({
         used: data.credits_used ?? 0,
         limit: data.credits_limit ?? 50,
         used_today: data.credits_used_today ?? 0,
-        daily_limit: data.daily_limit ?? 7,
+        daily_limit: baseDaily + adExtra,
+        base_daily: baseDaily,
       })
       setAdsWatched(data.ads_watched_today ?? 0)
     }
   }
 
   const maxAdsReached = adsWatched >= 2
+  const effectiveDailyLimit = credits.daily_limit
+  const remainingToday = effectiveDailyLimit - credits.used_today
 
   async function handleAdWatch() {
     setAdWatching(true)
-    setAdCountdown(5)
+    setAdCountdown(15)
     setAdMessage('')
 
-    // Simulate ad countdown
+    // Countdown timer
     const timer = setInterval(() => {
       setAdCountdown(prev => {
         if (prev <= 1) {
@@ -105,7 +124,7 @@ export default function Dashboard() {
       })
     }, 1000)
 
-    // After ad completes
+    // After 15 seconds (simulated ad duration)
     setTimeout(async () => {
       clearInterval(timer)
       try {
@@ -118,10 +137,10 @@ export default function Dashboard() {
         if (data.success) {
           setCredits(prev => ({
             ...prev,
-            limit: data.credits_limit,
+            daily_limit: data.effective_daily_limit,
           }))
           setAdsWatched(data.ads_watched_today)
-          setAdMessage(`🎉 ¡${data.extra_credits} créditos extras desbloqueados!`)
+          setAdMessage(`🎉 ¡+${data.extra_credits} créditos diarios extra!`)
         } else {
           setAdMessage(data.error || 'Error al desbloquear')
         }
@@ -129,8 +148,7 @@ export default function Dashboard() {
         setAdMessage(e.message || 'Error al desbloquear')
       }
       setAdWatching(false)
-      setAdCountdown(5)
-    }, 5000)
+    }, 15000)
   }
 
   async function handleSearch(e: React.FormEvent) {
@@ -150,15 +168,25 @@ export default function Dashboard() {
       })
       const data = await res.json()
       if (!data.success) throw new Error(data.error || 'Error al buscar')
+
+      // Update credits from response
+      if (data.credits) {
+        setCredits(prev => ({
+          ...prev,
+          used: data.credits.used,
+          limit: data.credits.limit,
+          used_today: data.credits.used_today,
+          daily_limit: data.credits.daily_limit,
+          base_daily: data.credits.base_daily || prev.base_daily,
+        }))
+      }
       setLeads(prev => [...data.leads, ...prev])
-      setCredits({
-        used: data.credits.used,
-        limit: data.credits.limit,
-        used_today: data.credits.used_today,
-        daily_limit: data.daily_limit,
-      })
     } catch (e: any) {
-      setError(e.message)
+      if (e.message.includes('diario')) {
+        setError('📅 Límite diario alcanzado. ¡Ve el botón dorado y desbloquea +7 créditos viendo un anuncio!')
+      } else {
+        setError(e.message)
+      }
     } finally {
       setLoading(false)
     }
@@ -198,7 +226,7 @@ export default function Dashboard() {
     )
   }
 
-  // Render ad modal
+  // Ad Modal with Adsterra
   const AdModal = () => (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => !adWatching && setShowAdModal(false)}>
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -206,40 +234,52 @@ export default function Dashboard() {
           <>
             <div className="flex justify-between items-start mb-4">
               <div>
-                <h3 className="text-xl font-bold">Desbloquea 7 créditos adicionales</h3>
-                <p className="text-gray-500 text-sm mt-1">Viendo esta publicidad</p>
+                <h3 className="text-xl font-bold">Desbloquea +7 créditos diarios</h3>
+                <p className="text-gray-500 text-sm mt-1">Mira este anuncio y obtén más búsquedas hoy</p>
               </div>
               <button onClick={() => setShowAdModal(false)} className="text-gray-400 hover:text-gray-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="bg-gradient-to-br from-amber-50 to-yellow-50 border border-amber-200 rounded-xl p-6 my-4 text-center">
+
+            {/* Ad preview */}
+            <div className="bg-gray-100 border border-gray-200 rounded-xl p-4 my-4 flex flex-col items-center justify-center min-h-[200px]">
               <div className="text-4xl mb-2">📺</div>
-              <p className="text-amber-800 font-medium">Anuncio patrocinado</p>
-              <p className="text-xs text-amber-600 mt-1">Tu privacidad es importante — sin datos compartidos</p>
+              <p className="text-gray-500 text-sm font-medium">Publicidad</p>
+              <p className="text-xs text-gray-400 mt-1">300x250 · Adsterra</p>
+              <div className="mt-3 w-full h-[1px] bg-gray-200" />
+              <p className="text-[10px] text-gray-300 mt-3">Al ver este anuncio apoyas Superlead gratis</p>
             </div>
-            <p className="text-xs text-gray-400 mb-4 text-center">
-              {2 - adsWatched} anuncios disponibles hoy · 14 créditos máximo/día
-            </p>
-            <Button onClick={handleAdWatch} className="w-full bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white font-bold text-lg py-6">
+
+            {credits.base_daily && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-center">
+                <p className="text-sm text-amber-800">
+                  Hoy: <strong>{credits.base_daily}/{credits.base_daily}</strong> → <strong>{credits.base_daily + 7}/{credits.base_daily + 7}</strong> (1er anuncio)
+                </p>
+                <p className="text-xs text-amber-600 mt-1">Máximo 2 anuncios/día = +14 créditos</p>
+              </div>
+            )}
+
+            <Button onClick={handleAdWatch} className="w-full bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white font-bold text-lg py-6 shadow-lg">
               <Play className="w-5 h-5 mr-2" />
-              Ver anuncio (5 seg)
+              Ver anuncio (15 seg)
             </Button>
           </>
         )}
 
         {adWatching && (
           <div className="text-center">
-            <div className="bg-gradient-to-br from-amber-50 to-yellow-50 border border-amber-200 rounded-xl p-6 my-4">
-              <div className="text-5xl mb-3">🎬</div>
-              <p className="font-bold text-amber-800 mb-2">Reproduciendo anuncio...</p>
-              <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+            <div className="bg-gray-100 border border-gray-200 rounded-xl p-4 my-4 flex flex-col items-center justify-center min-h-[200px]">
+              <div className="text-5xl mb-3">▶️</div>
+              <p className="font-bold text-gray-800 mb-2">Reproduciendo anuncio...</p>
+              <p className="text-xs text-gray-400 mb-4">Gracias por tu atención</p>
+              <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
                 <div
-                  className="h-3 bg-gradient-to-r from-amber-500 to-yellow-500 rounded-full transition-all duration-1000"
-                  style={{ width: `${((5 - adCountdown) / 5) * 100}%` }}
+                  className="h-4 bg-gradient-to-r from-amber-500 to-yellow-500 rounded-full transition-all duration-1000"
+                  style={{ width: `${((15 - adCountdown) / 15) * 100}%` }}
                 />
               </div>
-              <p className="text-sm text-amber-600">{adCountdown} segundos restantes</p>
+              <p className="text-sm text-amber-600 font-medium">{adCountdown} segundos</p>
             </div>
           </div>
         )}
@@ -249,16 +289,22 @@ export default function Dashboard() {
             <div className="bg-green-50 border border-green-200 rounded-xl p-6 my-4">
               <div className="text-5xl mb-2">✅</div>
               <p className="text-green-800 font-bold text-lg">{adMessage}</p>
-              <p className="text-xs text-green-600 mt-2">Sigue buscando leads sin límite</p>
+              <p className="text-xs text-green-600 mt-2">
+                Límite diario: {effectiveDailyLimit} créditos
+              </p>
             </div>
             <Button onClick={() => { setShowAdModal(false); setAdMessage('') }} className="w-full">
-              Continuar
+              ¡A buscar leads!
             </Button>
           </div>
         )}
       </div>
     </div>
   )
+
+  const dailyProgressPercent = effectiveDailyLimit > 0
+    ? (credits.used_today / effectiveDailyLimit) * 100
+    : 0
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -272,10 +318,10 @@ export default function Dashboard() {
             <span className="font-bold">Superlead</span>
           </div>
           <div className="flex items-center gap-3">
-            {/* Gold ad button */}
+            {/* Gold ad unlock button */}
             <button
               onClick={() => setShowAdModal(true)}
-              disabled={maxAdsReached}
+              disabled={maxAdsReached || effectiveDailyLimit >= 100}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-lg ${
                 maxAdsReached
                   ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
@@ -283,7 +329,10 @@ export default function Dashboard() {
               }`}
             >
               <Zap className="w-4 h-4" />
-              {maxAdsReached ? 'Usaste tus 2 anuncios' : '+7 créditos extra'}
+              {maxAdsReached
+                ? 'Usaste tus 2 anuncios'
+                : `+7 créditos (${remainingToday}/${effectiveDailyLimit})`
+              }
             </button>
             <UserButton />
           </div>
@@ -312,11 +361,11 @@ export default function Dashboard() {
                     Punto de Referencia <span className="text-gray-300">(opcional)</span>
                   </label>
                   <Input placeholder="Ej: Av. Providencia 2000" value={referencePoint} onChange={e => setReferencePoint(e.target.value)} disabled={loading} />
-                  <p className="text-xs text-gray-400 mt-1">La búsqueda comienza desde este punto y se expande</p>
+                  <p className="text-xs text-gray-400 mt-1">Búsqueda desde este punto, se expande si es necesario</p>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Cantidad de Leads</label>
-                  <div className="flex gap-2 items-center">
+                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Cantidad</label>
+                  <div className="flex gap-2 items-center flex-wrap">
                     {[10, 20, 30, 40, 50, 60].map(n => (
                       <button key={n} type="button" onClick={() => setLimit(n)}
                         className={`px-3 py-1.5 text-sm rounded-lg border transition-all ${
@@ -336,7 +385,7 @@ export default function Dashboard() {
 
               <div className="flex items-center justify-between">
                 <span className="text-xs text-gray-400">
-                  {credits.used_today}/{credits.daily_limit} usados hoy · {credits.limit - credits.used}/{credits.limit} del mes
+                  Hoy: {credits.used_today}/{effectiveDailyLimit} · Mes: {credits.limit - credits.used}/{credits.limit}
                 </span>
                 <Button type="submit" disabled={loading}>
                   {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
@@ -370,12 +419,22 @@ export default function Dashboard() {
             <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Hoy</CardTitle></CardHeader>
             <CardContent>
               <div className="flex items-center gap-2">
-                <p className="text-3xl font-bold">{credits.daily_limit - credits.used_today}</p>
-                <p className="text-sm text-gray-400">/{credits.daily_limit}</p>
-                <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-600 rounded-full transition-all" style={{ width: `${(credits.used_today / credits.daily_limit) * 100}%` }} />
+                <div className="text-right">
+                  <p className="text-3xl font-bold">{remainingToday}</p>
+                  <p className="text-xs text-gray-400">/{effectiveDailyLimit}</p>
+                </div>
+                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${
+                    dailyProgressPercent > 80 ? 'bg-red-500' : 'bg-blue-600'
+                  }`} style={{ width: `${Math.min(dailyProgressPercent, 100)}%` }} />
                 </div>
               </div>
+              {effectiveDailyLimit > credits.base_daily && (
+                <div className="flex items-center gap-1 mt-1">
+                  <Zap className="w-3 h-3 text-amber-500" />
+                  <p className="text-xs text-amber-600">+{effectiveDailyLimit - credits.base_daily} por anuncios</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -411,12 +470,8 @@ export default function Dashboard() {
                     {leads.map((lead) => (
                       <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50">
                         <td className="py-3 font-medium">{lead.name}</td>
-                        <td className="py-3">
-                          {lead.phone ? <a href={`tel:${lead.phone}`} className="text-blue-600 hover:underline">{lead.phone}</a> : '-'}
-                        </td>
-                        <td className="py-3">
-                          {lead.email ? <a href={`mailto:${lead.email}`} className="text-blue-600 hover:underline">{lead.email}</a> : <span className="text-gray-300">—</span>}
-                        </td>
+                        <td className="py-3">{lead.phone ? <a href={`tel:${lead.phone}`} className="text-blue-600 hover:underline">{lead.phone}</a> : '-'}</td>
+                        <td className="py-3">{lead.email ? <a href={`mailto:${lead.email}`} className="text-blue-600 hover:underline">{lead.email}</a> : <span className="text-gray-300">—</span>}</td>
                         <td className="py-3">
                           {lead.website ? (
                             <a href={lead.website} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline flex items-center gap-1">
@@ -424,9 +479,7 @@ export default function Dashboard() {
                             </a>
                           ) : <span className="text-gray-300">—</span>}
                         </td>
-                        <td className="py-3">
-                          {lead.rating ? <Badge variant="secondary" className="text-xs">{'★'.repeat(Math.round(lead.rating))} {lead.rating}</Badge> : '-'}
-                        </td>
+                        <td className="py-3">{lead.rating ? <Badge variant="secondary" className="text-xs">{'★'.repeat(Math.round(lead.rating))} {lead.rating}</Badge> : '-'}</td>
                         <td className="py-3 text-gray-500">{lead.enriched_category || '-'}</td>
                         <td className="py-3">
                           <Badge variant={lead.competition_level === 'Bajo' ? 'secondary' : lead.competition_level === 'Alto' ? 'destructive' : 'default'} className="text-xs">
@@ -443,9 +496,7 @@ export default function Dashboard() {
                               : null}
                           </div>
                         </td>
-                        <td className="py-3">
-                          {lead.distance_km ? <span className="text-sm text-gray-500">{lead.distance_km} km</span> : <span className="text-gray-300">—</span>}
-                        </td>
+                        <td className="py-3">{lead.distance_km ? <span className="text-sm text-gray-500">{lead.distance_km} km</span> : <span className="text-gray-300">—</span>}</td>
                       </tr>
                     ))}
                   </tbody>

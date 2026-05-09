@@ -22,17 +22,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Usuario no encontrado' }, { status: 404 })
     }
 
-    // Check daily ad limit
+    // Check/reset daily ad counters
     const today = new Date().toDateString()
     const lastActive = profile.last_active
       ? new Date(profile.last_active).toDateString()
       : null
 
     let adsWatchedToday = profile.ads_watched_today || 0
+    let adsExtra = profile.ads_extra_daily || 0
 
     // Reset if new day
     if (!lastActive || lastActive !== today) {
       adsWatchedToday = 0
+      adsExtra = 0
     }
 
     if (adsWatchedToday >= MAX_ADS_PER_DAY) {
@@ -42,14 +44,15 @@ export async function POST(req: NextRequest) {
       }, { status: 429 })
     }
 
-    // Add extra credits
-    const newCreditsAvailable = (profile.credits_limit || 50) + EXTRA_CREDITS_PER_AD
+    // Add extra daily credits
+    const newAdsExtra = adsExtra + EXTRA_CREDITS_PER_AD
     const newAdsWatched = adsWatchedToday + 1
+    const effectiveDailyLimit = (profile.daily_limit || 7) + newAdsExtra
 
     await db
       .from('users')
       .update({
-        credits_limit: newCreditsAvailable,
+        ads_extra_daily: newAdsExtra,
         ads_watched_today: newAdsWatched,
         last_active: new Date().toISOString(),
       })
@@ -58,10 +61,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       extra_credits: EXTRA_CREDITS_PER_AD,
-      credits_limit: newCreditsAvailable,
+      ads_extra_daily: newAdsExtra,
+      effective_daily_limit: effectiveDailyLimit,
       ads_watched_today: newAdsWatched,
       ads_remaining: MAX_ADS_PER_DAY - newAdsWatched,
-      message: `¡${EXTRA_CREDITS_PER_AD} créditos desbloqueados!`,
+      message: `¡+${EXTRA_CREDITS_PER_AD} créditos diarios extra! Límite hoy: ${effectiveDailyLimit}`,
     })
   } catch (error: any) {
     console.error('Unlock error:', error)

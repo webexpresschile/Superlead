@@ -67,12 +67,26 @@ export async function POST(req: NextRequest) {
         .eq('id', profile.id)
     }
 
+    // Reset daily ad counters if new day
+    let adsExtra = profile.ads_extra_daily || 0
+    let adsWatched = profile.ads_watched_today || 0
+
+    if (!lastActive || lastActive !== today) {
+      adsExtra = 0
+      adsWatched = 0
+      await db
+        .from('users')
+        .update({ ads_extra_daily: 0, ads_watched_today: 0 })
+        .eq('id', profile.id)
+    }
+
     // Plan config
     const config = PLAN_CONFIG[profile.plan] || PLAN_CONFIG.free
     const creditsLimit = profile.credits_limit || config.credits_limit
-    const dailyLimit = profile.daily_limit || config.daily_limit
+    const baseDailyLimit = profile.daily_limit || config.daily_limit
+    const effectiveDailyLimit = baseDailyLimit + adsExtra
     const remainingTotal = creditsLimit - (profile.credits_used || 0)
-    const remainingDaily = dailyLimit - creditsUsedToday
+    const remainingDaily = effectiveDailyLimit - creditsUsedToday
 
     if (remainingTotal <= 0) {
       return NextResponse.json(
@@ -229,7 +243,8 @@ export async function POST(req: NextRequest) {
         used: newTotal,
         limit: creditsLimit,
         used_today: newDaily,
-        daily_limit: dailyLimit,
+        daily_limit: effectiveDailyLimit,
+        base_daily: baseDailyLimit,
       },
     })
   } catch (error: any) {
