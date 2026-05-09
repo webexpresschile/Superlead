@@ -1,27 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { auth } from '@clerk/nextjs/server'
 import { supabase } from '@/lib/supabase'
 import { searchPlaces } from '@/lib/google-places'
 import { enrichLeads } from '@/lib/deepseek'
 
 export async function POST(req: NextRequest) {
   try {
-    // Auth check
-    const authHeader = req.headers.get('authorization')
-    const token = authHeader?.replace('Bearer ', '')
-    if (!token) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+    const { userId } = await auth()
+    if (!userId) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
-    if (authError || !user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
-
-    // Check user credits
-    const { data: profile } = await supabase
+    // Get or create user in Supabase
+    const { data: existing } = await supabase
       .from('users')
-      .select('credits_used, credits_limit')
-      .eq('id', user.id)
+      .select('id, credits_used, credits_limit')
+      .eq('auth_id', userId)
       .single()
 
-    if (profile && profile.credits_used >= profile.credits_limit) {
-      return NextResponse.json({ error: 'Límite de leads alcanzado. Actualiza tu plan.' }, { status: 403 })
+    let profile = existing
+
+    if (!existing) {
+      // First time — auto-create profile
+      const { data: newUser } = await supabase
+        .from('users')
+        .insert({
+          auth_id: userId,
+          email: 'pending@update.com',
+          name: 'User',
+          plan: 'free',
+          credits_used: 0,
+          credits_limit: 50,
+        })
+        .select('id, credits_used, credits_limit')
+        .single()
+      profile = newUser
+    }
+
+    if (!profile) throw new Error('No se pudo crear el perfil')
+
+    // Check credits
+    if (profile.credits_used >= profile.credits_limit) {
+      return NextResponse.json(
+        { error: 'Límite de leads alcanzado. Actualiza tu plan.' },
+        { status: 403 }
+      )
     }
 
     const { query, location, radius } = await req.json()
@@ -32,7 +53,7 @@ export async function POST(req: NextRequest) {
     // Create search record
     const { data: search, error: searchError } = await supabase
       .from('searches')
-      .insert({ user_id: user.id, query, location, radius: radius || 5 })
+      .insert({ user_id: profile.id, query, location, radius: radius || 5 })
       .select()
       .single()
 
@@ -41,7 +62,7 @@ export async function POST(req: NextRequest) {
     // Search Google Places
     const places = await searchPlaces({ query, location, radius: (radius || 5) * 1000 })
 
-    // Batch enrich with DeepSeek (in batches of 10)
+    // Batch enrich with DeepSeek
     const enriched = await enrichLeads(
       places.map(p => ({
         name: (typeof p.displayName === 'object' ? p.displayName?.text : p.displayName) || '',
@@ -56,7 +77,7 @@ export async function POST(req: NextRequest) {
     // Insert leads
     const leads = places.map((place, i) => ({
       search_id: search.id,
-      user_id: user.id,
+      user_id: profile.id,
       name: (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || '',
       address: place.formattedAddress || null,
       phone: place.nationalPhoneNumber || null,
@@ -79,16 +100,17 @@ export async function POST(req: NextRequest) {
 
     if (insertError) throw insertError
 
-    // Update search count + user credits
+    // Update counts
     await supabase.from('searches').update({ results_count: leads.length }).eq('id', search.id)
-    await supabase.from('users').update({ 
-      credits_used: (profile?.credits_used || 0) + leads.length 
-    }).eq('id', user.id)
+    await supabase
+      .from('users')
+      .update({ credits_used: (profile.credits_used || 0) + leads.length })
+      .eq('id', profile.id)
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       search_id: search.id,
       total: leads.length,
-      leads: savedLeads 
+      leads: savedLeads,
     })
   } catch (error) {
     console.error('Search error:', error)

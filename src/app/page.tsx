@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { Search, Download, Sparkles, BarChart3, Building2, Target } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { SignInButton, SignUpButton } from '@clerk/nextjs'
 
 const features = [
   {
@@ -80,12 +81,12 @@ export default function Home() {
             <Link href="/dashboard" className="hover:text-gray-900">Dashboard</Link>
           </nav>
           <div className="flex items-center gap-3">
-            <Link href="/auth/login">
+            <SignInButton mode="modal">
               <Button variant="ghost" size="sm">Iniciar sesión</Button>
-            </Link>
-            <Link href="/auth/register">
+            </SignInButton>
+            <SignUpButton mode="modal">
               <Button size="sm">Registrarse</Button>
-            </Link>
+            </SignUpButton>
           </div>
         </div>
       </header>
@@ -102,16 +103,16 @@ export default function Home() {
             <span className="text-blue-600">Google Maps.</span> Automatizado.
           </h1>
           <p className="text-xl text-gray-500 max-w-2xl mx-auto mb-10">
-            Busca negocios por rubro y ubicación, enriquece los datos con IA, 
+            Busca negocios por rubro y ubicación, enriquece los datos con IA,
             y exporta leads listos para vender. Sin complicaciones.
           </p>
           <div className="flex items-center justify-center gap-4">
-            <Link href="/auth/register">
+            <SignUpButton mode="modal">
               <Button size="lg" className="text-base px-8">
                 Empezar gratis
                 <Target className="ml-2 w-4 h-4" />
               </Button>
-            </Link>
+            </SignUpButton>
             <Button variant="outline" size="lg" className="text-base px-8">
               Ver demo
             </Button>
@@ -176,12 +177,11 @@ export default function Home() {
                     </li>
                   ))}
                 </ul>
-                <Button
-                  className="w-full"
-                  variant={plan.featured ? 'default' : 'outline'}
-                >
-                  {plan.cta}
-                </Button>
+                <SignUpButton mode="modal">
+                  <Button className="w-full" variant={plan.featured ? 'default' : 'outline'}>
+                    {plan.cta}
+                  </Button>
+                </SignUpButton>
               </div>
             ))}
           </div>

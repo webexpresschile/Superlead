@@ -1,16 +1,17 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useUser, useAuth, SignInButton, UserButton } from '@clerk/nextjs'
 import { supabase } from '@/lib/supabase'
-import type { Session } from '@supabase/supabase-js'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Search, Download, LogOut, Target, Loader2 } from 'lucide-react'
+import { Search, Download, Target, Loader2 } from 'lucide-react'
 
 export default function Dashboard() {
-  const [session, setSession] = useState<Session | null>(null)
+  const { isSignedIn, user } = useUser()
+  const { getToken } = useAuth()
   const [leads, setLeads] = useState<any[]>([])
   const [query, setQuery] = useState('')
   const [location, setLocation] = useState('')
@@ -18,21 +19,20 @@ export default function Dashboard() {
   const [credits, setCredits] = useState({ used: 0, limit: 50 })
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      if (session) {
-        loadLeads(session.access_token)
-        loadCredits(session.access_token)
-      }
-    })
-  }, [])
+    if (isSignedIn) {
+      loadLeads()
+      loadCredits()
+    }
+  }, [isSignedIn])
 
-  async function loadLeads(token: string) {
+  async function loadLeads() {
+    const token = await getToken()
+    if (!token) return
     const res = await fetch('/api/leads/export', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ format: 'json' }),
     })
@@ -40,21 +40,28 @@ export default function Dashboard() {
     if (data.leads) setLeads(data.leads)
   }
 
-  async function loadCredits(token: string) {
-    const { data } = await supabase.from('users').select('credits_used, credits_limit').single()
+  async function loadCredits() {
+    const token = await getToken()
+    if (!token) return
+    const { data } = await supabase
+      .from('users')
+      .select('credits_used, credits_limit')
+      .eq('auth_id', user?.id)
+      .single()
     if (data) setCredits({ used: data.credits_used ?? 0, limit: data.credits_limit ?? 50 })
   }
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
-    if (!query || !location || !session) return
+    if (!query || !location) return
     setLoading(true)
     try {
+      const token = await getToken()
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ query, location }),
       })
@@ -70,12 +77,13 @@ export default function Dashboard() {
   }
 
   async function handleExport() {
-    if (!session) return
+    const token = await getToken()
+    if (!token) return
     const res = await fetch('/api/leads/export', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ format: 'csv' }),
     })
@@ -87,7 +95,7 @@ export default function Dashboard() {
     a.click()
   }
 
-  if (!session) {
+  if (!isSignedIn) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-96">
@@ -96,9 +104,9 @@ export default function Dashboard() {
             <CardTitle>Inicia sesión</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Button className="w-full" onClick={() => supabase.auth.signInWithOAuth({ provider: 'google' })}>
-              Continuar con Google
-            </Button>
+            <SignInButton mode="modal">
+              <Button className="w-full">Continuar con Google</Button>
+            </SignInButton>
           </CardContent>
         </Card>
       </div>
@@ -118,9 +126,7 @@ export default function Dashboard() {
             <Badge variant="secondary" className="text-xs">
               {credits.used}/{credits.limit} leads
             </Badge>
-            <Button variant="ghost" size="sm" onClick={() => supabase.auth.signOut()}>
-              <LogOut className="w-4 h-4" />
-            </Button>
+            <UserButton />
           </div>
         </div>
       </header>
