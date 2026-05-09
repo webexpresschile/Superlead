@@ -7,18 +7,35 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Search, Download, Target, Loader2, ShoppingCart } from 'lucide-react'
+import { Search, Download, Target, Loader2, ShoppingCart, ExternalLink } from 'lucide-react'
 
-const LEAD_OPTIONS = [10, 20, 30, 40, 50, 60]
+interface Lead {
+  id: string
+  name: string
+  phone: string | null
+  email: string | null
+  address: string | null
+  rating: number | null
+  enriched_category: string | null
+  competition_level: string
+  facebook_url: string | null
+  instagram_url: string | null
+  has_facebook: boolean
+  has_instagram: boolean
+  distance_km: number | null
+  search_id: string
+}
 
 export default function Dashboard() {
   const { isSignedIn, user } = useUser()
   const { getToken } = useAuth()
-  const [leads, setLeads] = useState<any[]>([])
-  const [query, setQuery] = useState('')
+  const [leads, setLeads] = useState<Lead[]>([])
+  const [keyword, setKeyword] = useState('')
   const [location, setLocation] = useState('')
-  const [maxResults, setMaxResults] = useState(20)
+  const [referencePoint, setReferencePoint] = useState('')
+  const [limit, setLimit] = useState(20)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [credits, setCredits] = useState({
     used: 0,
     limit: 50,
@@ -38,10 +55,7 @@ export default function Dashboard() {
     if (!token) return
     const res = await fetch('/api/leads/export', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ format: 'json' }),
     })
     const data = await res.json()
@@ -68,20 +82,27 @@ export default function Dashboard() {
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
-    if (!query || !location) return
+    setError('')
+
+    if (!keyword.trim()) { setError('Ingresa un rubro'); return }
+    if (!location.trim()) { setError('Ingresa una ubicación'); return }
+    if (limit < 1 || limit > 60) { setError('La cantidad debe ser entre 1 y 60'); return }
+
     setLoading(true)
     try {
       const token = await getToken()
       const res = await fetch('/api/search', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ query, location, max_results: maxResults }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          keyword,
+          location,
+          limit,
+          reference_point: referencePoint || null,
+        }),
       })
       const data = await res.json()
-      if (data.error) throw new Error(data.error)
+      if (!data.success) throw new Error(data.error || 'Error al buscar')
       setLeads(prev => [...data.leads, ...prev])
       setCredits({
         used: data.credits.used,
@@ -90,13 +111,7 @@ export default function Dashboard() {
         daily_limit: data.credits.daily_limit,
       })
     } catch (e: any) {
-      if (e.message.includes('diario')) {
-        alert('📅 Límite diario alcanzado. Vuelve mañana o compra más créditos.')
-      } else if (e.message.includes('mensual')) {
-        alert('📊 Límite mensual alcanzado. Compra más créditos.')
-      } else {
-        alert(e.message)
-      }
+      setError(e.message)
     } finally {
       setLoading(false)
     }
@@ -107,17 +122,14 @@ export default function Dashboard() {
     if (!token) return
     const res = await fetch('/api/leads/export', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ format: 'csv' }),
     })
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'leads.csv'
+    a.download = 'superlead-leads.csv'
     a.click()
   }
 
@@ -141,7 +153,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Dashboard Header */}
+      {/* Navbar */}
       <header className="bg-white border-b border-gray-100">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -162,50 +174,80 @@ export default function Dashboard() {
         {/* Search Form */}
         <Card className="mb-8">
           <CardContent className="pt-6 space-y-4">
-            <form onSubmit={handleSearch} className="flex gap-4">
-              <div className="flex-1">
-                <Input
-                  placeholder="Rubro (ej: restaurantes, dentistas, gym)"
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                />
+            <form onSubmit={handleSearch} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Rubro</label>
+                  <Input
+                    placeholder="Ej: Restaurantes, Dentistas, Gimnasios"
+                    value={keyword}
+                    onChange={e => setKeyword(e.target.value)}
+                    disabled={loading}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Ubicación</label>
+                  <Input
+                    placeholder="Ej: Providencia, Santiago"
+                    value={location}
+                    onChange={e => setLocation(e.target.value)}
+                    disabled={loading}
+                  />
+                </div>
               </div>
-              <div className="flex-1">
-                <Input
-                  placeholder="Ubicación (ej: Santiago, Chile)"
-                  value={location}
-                  onChange={e => setLocation(e.target.value)}
-                />
-              </div>
-              <Button type="submit" disabled={loading || !query || !location}>
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                Buscar
-              </Button>
-            </form>
 
-            {/* Lead quantity selector */}
-            <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
-              <span className="text-sm text-gray-500">Leads por búsqueda:</span>
-              <div className="flex gap-2">
-                {LEAD_OPTIONS.map(n => (
-                  <button
-                    key={n}
-                    type="button"
-                    onClick={() => setMaxResults(n)}
-                    className={`px-3 py-1.5 text-sm rounded-lg border transition-all ${
-                      maxResults === n
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
-                    }`}
-                  >
-                    {n}
-                  </button>
-                ))}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">
+                    Punto de Referencia <span className="text-gray-300">(opcional)</span>
+                  </label>
+                  <Input
+                    placeholder="Ej: Av. Providencia 2000"
+                    value={referencePoint}
+                    onChange={e => setReferencePoint(e.target.value)}
+                    disabled={loading}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    La búsqueda comienza desde este punto y se expande
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Cantidad de Leads</label>
+                  <div className="flex gap-2 items-center">
+                    {[10, 20, 30, 40, 50, 60].map(n => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setLimit(n)}
+                        className={`px-3 py-1.5 text-sm rounded-lg border transition-all ${
+                          limit === n
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
+                        }`}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <span className="text-xs text-gray-400 ml-auto">
-                {credits.used_today}/{credits.daily_limit} usados hoy
-              </span>
-            </div>
+
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-400">
+                  {credits.used_today}/{credits.daily_limit} usados hoy · {credits.limit - credits.used}/{credits.limit} del mes
+                </span>
+                <Button type="submit" disabled={loading}>
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
+                  Buscar Leads
+                </Button>
+              </div>
+            </form>
           </CardContent>
         </Card>
 
@@ -278,22 +320,38 @@ export default function Dashboard() {
                     <tr className="border-b border-gray-100">
                       <th className="text-left py-3 font-medium text-gray-500">Nombre</th>
                       <th className="text-left py-3 font-medium text-gray-500">Teléfono</th>
-                      <th className="text-left py-3 font-medium text-gray-500">Dirección</th>
+                      <th className="text-left py-3 font-medium text-gray-500">Email</th>
                       <th className="text-left py-3 font-medium text-gray-500">Rating</th>
                       <th className="text-left py-3 font-medium text-gray-500">Categoría</th>
                       <th className="text-left py-3 font-medium text-gray-500">Competencia</th>
+                      <th className="text-left py-3 font-medium text-gray-500">RRSS</th>
+                      <th className="text-left py-3 font-medium text-gray-500">Distancia</th>
                     </tr>
                   </thead>
                   <tbody>
                     {leads.map((lead) => (
                       <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50">
                         <td className="py-3 font-medium">{lead.name}</td>
-                        <td className="py-3 text-gray-500">{lead.phone || '-'}</td>
-                        <td className="py-3 text-gray-500 max-w-[200px] truncate">{lead.address || '-'}</td>
+                        <td className="py-3">
+                          {lead.phone ? (
+                            <a href={`tel:${lead.phone}`} className="text-blue-600 hover:underline">
+                              {lead.phone}
+                            </a>
+                          ) : '-'}
+                        </td>
+                        <td className="py-3">
+                          {lead.email ? (
+                            <a href={`mailto:${lead.email}`} className="text-blue-600 hover:underline">
+                              {lead.email}
+                            </a>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
                         <td className="py-3">
                           {lead.rating ? (
                             <Badge variant="secondary" className="text-xs">
-                              {lead.rating} ★
+                              {'★'.repeat(Math.round(lead.rating))} {lead.rating}
                             </Badge>
                           ) : '-'}
                         </td>
@@ -305,6 +363,41 @@ export default function Dashboard() {
                           } className="text-xs">
                             {lead.competition_level}
                           </Badge>
+                        </td>
+                        <td className="py-3">
+                          <div className="flex gap-2">
+                            {lead.has_facebook && lead.facebook_url ? (
+                              <a
+                                href={lead.facebook_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 hover:text-blue-800"
+                                title="Facebook"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </a>
+                            ) : (
+                              <span className="text-gray-300">—</span>
+                            )}
+                            {lead.has_instagram && lead.instagram_url ? (
+                              <a
+                                href={lead.instagram_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-pink-600 hover:text-pink-800"
+                                title="Instagram"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </a>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="py-3">
+                          {lead.distance_km ? (
+                            <span className="text-sm text-gray-500">{lead.distance_km} km</span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
                         </td>
                       </tr>
                     ))}

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
-import { supabase } from '@/lib/supabase'
-import { searchPlaces } from '@/lib/google-places'
+import { getServerSupabase } from '@/lib/supabase'
+import { searchPlaces, EnrichedPlace } from '@/lib/google-places'
 import { enrichLeads } from '@/lib/deepseek'
+import { extractEmail } from '@/lib/email-extractor'
+import { validateSocialMedia } from '@/lib/social-validator'
 
 const PLAN_CONFIG: Record<string, { credits_limit: number; daily_limit: number }> = {
   free:    { credits_limit: 50,  daily_limit: 7 },
@@ -16,15 +18,17 @@ export async function POST(req: NextRequest) {
     const { userId } = await auth()
     if (!userId) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
-    // Get or create user in Supabase
-    let { data: profile } = await supabase
+    const db = getServerSupabase()
+
+    // Get or create user profile
+    let { data: profile } = await db
       .from('users')
       .select('*')
       .eq('auth_id', userId)
       .single()
 
     if (!profile) {
-      const { data: newUser } = await supabase
+      const { data: newUser, error: createError } = await db
         .from('users')
         .insert({
           auth_id: userId,
@@ -38,6 +42,10 @@ export async function POST(req: NextRequest) {
         })
         .select()
         .single()
+
+      if (createError) {
+        return NextResponse.json({ error: 'Error al crear perfil: ' + createError.message }, { status: 500 })
+      }
       profile = newUser
     }
 
@@ -52,79 +60,60 @@ export async function POST(req: NextRequest) {
 
     if (!lastActive || lastActive !== today) {
       creditsUsedToday = 0
-      await supabase
+      await db
         .from('users')
-        .update({
-          credits_used_today: 0,
-          last_active: new Date().toISOString(),
-        })
+        .update({ credits_used_today: 0, last_active: new Date().toISOString() })
         .eq('id', profile.id)
     }
 
-    // Get config for user's plan
+    // Plan config
     const config = PLAN_CONFIG[profile.plan] || PLAN_CONFIG.free
     const creditsLimit = profile.credits_limit || config.credits_limit
     const dailyLimit = profile.daily_limit || config.daily_limit
-
-    // Check total credits
     const remainingTotal = creditsLimit - (profile.credits_used || 0)
+    const remainingDaily = dailyLimit - creditsUsedToday
+
     if (remainingTotal <= 0) {
       return NextResponse.json(
         { error: 'Límite mensual alcanzado. Compra más créditos.', code: 'limit_exceeded' },
         { status: 403 }
       )
     }
-
-    // Check daily credits
-    const remainingDaily = dailyLimit - creditsUsedToday
     if (remainingDaily <= 0) {
       return NextResponse.json(
-        { error: 'Límite diario alcanzado. Vuelve mañana o compra más créditos.', code: 'daily_limit_exceeded' },
+        { error: 'Límite diario alcanzado. Vuelve mañana.', code: 'daily_limit_exceeded' },
         { status: 429 }
       )
     }
 
-    const { query, location, radius, max_results } = await req.json()
-    if (!query || !location) {
-      return NextResponse.json({ error: 'query y location son requeridos' }, { status: 400 })
+    // Parse request body
+    const { keyword, location, limit: requestedLimit = 20, reference_point } = await req.json()
+
+    if (!keyword || !location) {
+      return NextResponse.json({ error: 'keyword y location son requeridos' }, { status: 400 })
     }
 
-    // Calculate how many leads the user can actually get
-    const requestedLeads = Math.min(
-      max_results || 20,
-      remainingTotal,
-      remainingDaily,
-      60 // Google Places max per search
-    )
+    const limit = Math.min(requestedLimit, remainingTotal, remainingDaily, 60)
 
-    if (requestedLeads <= 0) {
+    if (limit <= 0) {
       return NextResponse.json({ error: 'Sin créditos disponibles' }, { status: 403 })
     }
 
-    // Create search record
-    const { data: search, error: searchError } = await supabase
-      .from('searches')
-      .insert({
-        user_id: profile.id,
-        query,
-        location,
-        radius: radius || 5,
-        results_count: 0,
-      })
-      .select()
-      .single()
+    // Search Google Places
+    console.log(`Searching: "${keyword}" in "${location}", ref="${reference_point || '-'}", limit=${limit}`)
+    const places: EnrichedPlace[] = await searchPlaces({
+      query: keyword,
+      location,
+      referencePoint: reference_point,
+      limit,
+    })
 
-    if (searchError) throw searchError
+    const affordable = places.slice(0, limit)
+    console.log(`Got ${affordable.length} places`)
 
-    // Search Google Places (always fetch up to 60 for pagination, but limit saved)
-    const places = await searchPlaces({ query, location, radius: (radius || 5) * 1000 })
-
-    // Limit results to what the user can afford
-    const affordablePlaces = places.slice(0, requestedLeads)
-
-    // Batch enrich with DeepSeek
+    // Enrich with DeepSeek
     const enriched = await enrichLeads(
-      affordablePlaces.map(p => ({
+      affordable.map(p => ({
         name: (typeof p.displayName === 'object' ? p.displayName?.text : p.displayName) || '',
         types: p.types || [],
         rating: p.rating || null,
@@ -134,39 +123,88 @@ export async function POST(req: NextRequest) {
       }))
     )
 
-    // Insert leads
-    const leads = affordablePlaces.map((place, i) => ({
-      search_id: search.id,
-      user_id: profile.id,
-      name: (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || '',
-      address: place.formattedAddress || null,
-      phone: place.nationalPhoneNumber || null,
-      website: place.websiteUri || null,
-      rating: place.rating || null,
-      reviews_count: place.userRatingCount || null,
-      types: place.types || [],
-      latitude: place.location?.latitude || null,
-      longitude: place.location?.longitude || null,
-      place_id: place.id,
-      enriched_description: enriched[i]?.description || null,
-      enriched_category: enriched[i]?.category || null,
-      competition_level: enriched[i]?.competition_level || 'Medio',
-    }))
+    // Extract emails + social media (in parallel, 3 at a time to avoid rate limits)
+    const enrichResults = await Promise.allSettled(
+      affordable.map(async (place, i) => {
+        const name = (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || ''
+        const [emailResult, socialResult] = await Promise.all([
+          extractEmail({ name, website: place.websiteUri, address: place.formattedAddress }),
+          validateSocialMedia({ name, website: place.websiteUri }),
+        ])
+        return { emailResult, socialResult, index: i }
+      })
+    )
 
-    const { data: savedLeads, error: insertError } = await supabase
+    // Create search record
+    const { data: search, error: searchError } = await db
+      .from('searches')
+      .insert({
+        user_id: profile.id,
+        query: keyword,
+        location,
+        radius: 5,
+        reference_point: reference_point || null,
+        limit_leads: limit,
+        results_count: 0,
+      })
+      .select()
+      .single()
+
+    if (searchError) {
+      return NextResponse.json({ error: 'Error al crear búsqueda: ' + searchError.message }, { status: 500 })
+    }
+
+    // Build leads array
+    const leads = affordable.map((place, i) => {
+      const name = (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || ''
+      const enrichment = enrichResults[i]
+      const email = enrichment?.status === 'fulfilled' ? enrichment.value.emailResult.email : null
+      const social = enrichment?.status === 'fulfilled' ? enrichment.value.socialResult : null
+
+      return {
+        search_id: search.id,
+        user_id: profile.id,
+        name,
+        address: place.formattedAddress || null,
+        phone: place.nationalPhoneNumber || null,
+        website: place.websiteUri || null,
+        rating: place.rating || null,
+        reviews_count: place.userRatingCount || null,
+        types: place.types || [],
+        latitude: place.location?.latitude || null,
+        longitude: place.location?.longitude || null,
+        place_id: place.id,
+        enriched_description: enriched[i]?.description || null,
+        enriched_category: enriched[i]?.category || null,
+        competition_level: enriched[i]?.competition_level || 'Medio',
+        email,
+        facebook_url: social?.facebook_url || null,
+        instagram_url: social?.instagram_url || null,
+        has_facebook: social?.has_facebook || false,
+        has_instagram: social?.has_instagram || false,
+        reference_point: reference_point || null,
+        ref_latitude: place.ref_latitude,
+        ref_longitude: place.ref_longitude,
+        distance_km: place.distance_km,
+      }
+    })
+
+    const { data: savedLeads, error: insertError } = await db
       .from('leads')
       .insert(leads)
       .select()
 
-    if (insertError) throw insertError
+    if (insertError) {
+      return NextResponse.json({ error: 'Error al guardar leads: ' + insertError.message }, { status: 500 })
+    }
 
     // Update counters
     const newTotal = (profile.credits_used || 0) + leads.length
     const newDaily = creditsUsedToday + leads.length
 
     await Promise.all([
-      supabase.from('searches').update({ results_count: leads.length }).eq('id', search.id),
-      supabase.from('users').update({
+      db.from('searches').update({ results_count: leads.length }).eq('id', search.id),
+      db.from('users').update({
         credits_used: newTotal,
         credits_used_today: newDaily,
         last_active: new Date().toISOString(),
@@ -174,9 +212,12 @@ export async function POST(req: NextRequest) {
     ])
 
     return NextResponse.json({
+      success: true,
       search_id: search.id,
       total: leads.length,
       leads: savedLeads,
+      credits_used: leads.length,
+      credits_remaining: creditsLimit - newTotal,
       credits: {
         used: newTotal,
         limit: creditsLimit,
@@ -184,8 +225,8 @@ export async function POST(req: NextRequest) {
         daily_limit: dailyLimit,
       },
     })
-  } catch (error) {
+  } catch (error: any) {
     console.error('Search error:', error)
-    return NextResponse.json({ error: 'Error al buscar leads' }, { status: 500 })
+    return NextResponse.json({ error: error.message || 'Error al buscar leads' }, { status: 500 })
   }
 }
