@@ -5,6 +5,7 @@ import { searchPlaces, EnrichedPlace } from '@/lib/google-places'
 import { enrichLeads } from '@/lib/deepseek'
 import { extractEmail } from '@/lib/email-extractor'
 import { validateSocialMedia } from '@/lib/social-validator'
+import { findWebsite } from '@/lib/website-finder'
 
 const PLAN_CONFIG: Record<string, { credits_limit: number; daily_limit: number }> = {
   free:    { credits_limit: 50,  daily_limit: 7 },
@@ -123,15 +124,16 @@ export async function POST(req: NextRequest) {
       }))
     )
 
-    // Extract emails + social media (in parallel, 3 at a time to avoid rate limits)
+    // Extract emails + social media + website (parallel, sequential per lead to avoid rate limits)
     const enrichResults = await Promise.allSettled(
       affordable.map(async (place, i) => {
         const name = (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || ''
-        const [emailResult, socialResult] = await Promise.all([
+        const [emailResult, socialResult, websiteResult] = await Promise.all([
           extractEmail({ name, website: place.websiteUri, address: place.formattedAddress }),
           validateSocialMedia({ name, website: place.websiteUri }),
+          findWebsite(name, place.formattedAddress, place.websiteUri),
         ])
-        return { emailResult, socialResult, index: i }
+        return { emailResult, socialResult, websiteResult, index: i }
       })
     )
 
@@ -160,6 +162,11 @@ export async function POST(req: NextRequest) {
       const enrichment = enrichResults[i]
       const email = enrichment?.status === 'fulfilled' ? enrichment.value.emailResult.email : null
       const social = enrichment?.status === 'fulfilled' ? enrichment.value.socialResult : null
+      const websiteFound = enrichment?.status === 'fulfilled'
+        ? enrichment.value.websiteResult?.url
+        : null
+      // Use website from search/find if Google didn't provide one
+      const websiteUrl = place.websiteUri || websiteFound
 
       return {
         search_id: search.id,
@@ -167,7 +174,7 @@ export async function POST(req: NextRequest) {
         name,
         address: place.formattedAddress || null,
         phone: place.nationalPhoneNumber || null,
-        website: place.websiteUri || null,
+        website: websiteUrl,
         rating: place.rating || null,
         reviews_count: place.userRatingCount || null,
         types: place.types || [],
