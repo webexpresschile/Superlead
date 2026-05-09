@@ -210,21 +210,26 @@ export async function POST(req: NextRequest) {
       }
     })
 
+    // Upsert: si el place_id ya existe, se salta el duplicado (no falla)
     const { data: savedLeads, error: insertError } = await db
       .from('leads')
-      .insert(leads)
+      .upsert(leads, { onConflict: 'place_id', ignoreDuplicates: true })
       .select()
 
     if (insertError) {
       return NextResponse.json({ error: 'Error al guardar leads: ' + insertError.message }, { status: 500 })
     }
 
+    // Count only actually inserted (no duplicados)
+    const insertedCount = savedLeads?.length || 0
+    const skippedCount = leads.length - insertedCount
+
     // Update counters
-    const newTotal = (profile.credits_used || 0) + leads.length
-    const newDaily = creditsUsedToday + leads.length
+    const newTotal = (profile.credits_used || 0) + insertedCount
+    const newDaily = creditsUsedToday + insertedCount
 
     await Promise.all([
-      db.from('searches').update({ results_count: leads.length }).eq('id', search.id),
+      db.from('searches').update({ results_count: insertedCount }).eq('id', search.id),
       db.from('users').update({
         credits_used: newTotal,
         credits_used_today: newDaily,
@@ -235,9 +240,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       search_id: search.id,
-      total: leads.length,
+      total: insertedCount,
+      skipped_duplicates: skippedCount,
       leads: savedLeads,
-      credits_used: leads.length,
+      credits_used: insertedCount,
       credits_remaining: creditsLimit - newTotal,
       credits: {
         used: newTotal,
