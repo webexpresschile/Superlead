@@ -9,18 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Search, Download, Target, Loader2, ExternalLink, Zap, X, Play } from 'lucide-react'
 
-const ADSTERRA_SCRIPT = `
-<!-- Adsterra ad placeholder -->
-<div style="width:300px;height:250px;margin:0 auto;">
-  <iframe
-    src="about:blank"
-    style="width:300px;height:250px;border:none;"
-    title="Ad"
-    sandbox="allow-scripts allow-same-origin"
-  ></iframe>
-  <p style="font-size:10px;color:#999;text-align:center;margin-top:2px;">Publicidad</p>
-</div>
-`
+
 
 interface Lead {
   id: string
@@ -242,13 +231,14 @@ export default function Dashboard() {
               </button>
             </div>
 
-            {/* Ad preview */}
-            <div className="bg-gray-100 border border-gray-200 rounded-xl p-4 my-4 flex flex-col items-center justify-center min-h-[200px]">
-              <div className="text-4xl mb-2">📺</div>
-              <p className="text-gray-500 text-sm font-medium">Publicidad</p>
-              <p className="text-xs text-gray-400 mt-1">300x250 · Adsterra</p>
-              <div className="mt-3 w-full h-[1px] bg-gray-200" />
-              <p className="text-[10px] text-gray-300 mt-3">Al ver este anuncio apoyas Superlead gratis</p>
+            {/* Adsterra ad banner */}
+            <div className="bg-gray-100 border border-gray-200 rounded-xl my-4 overflow-hidden flex items-center justify-center" style={{ minHeight: '250px' }}>
+              <iframe
+                src="/api/ads/serve?width=300&height=250"
+                style={{ width: 300, height: 250, border: 'none' }}
+                title="Adsterra"
+                sandbox="allow-scripts allow-same-origin allow-popups"
+              />
             </div>
 
             {credits.base_daily && (
@@ -269,17 +259,25 @@ export default function Dashboard() {
 
         {adWatching && (
           <div className="text-center">
-            <div className="bg-gray-100 border border-gray-200 rounded-xl p-4 my-4 flex flex-col items-center justify-center min-h-[200px]">
-              <div className="text-5xl mb-3">▶️</div>
-              <p className="font-bold text-gray-800 mb-2">Reproduciendo anuncio...</p>
-              <p className="text-xs text-gray-400 mb-4">Gracias por tu atención</p>
-              <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
-                <div
-                  className="h-4 bg-gradient-to-r from-amber-500 to-yellow-500 rounded-full transition-all duration-1000"
-                  style={{ width: `${((15 - adCountdown) / 15) * 100}%` }}
-                />
+            <div className="bg-gray-100 border border-gray-200 rounded-xl my-4 overflow-hidden">
+              {/* Show ad during countdown */}
+              <iframe
+                src="/api/ads/serve?width=300&height=250"
+                style={{ width: 300, height: 250, border: 'none' }}
+                title="Adsterra"
+                sandbox="allow-scripts allow-same-origin allow-popups"
+              />
+              {/* Progress bar below ad */}
+              <div className="p-4 pt-2">
+                <p className="font-bold text-gray-800 mb-2">Reproduciendo anuncio...</p>
+                <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
+                  <div
+                    className="h-4 bg-gradient-to-r from-amber-500 to-yellow-500 rounded-full transition-all duration-1000"
+                    style={{ width: `${((15 - adCountdown) / 15) * 100}%` }}
+                  />
+                </div>
+                <p className="text-sm text-amber-600 font-medium">{adCountdown} segundos</p>
               </div>
-              <p className="text-sm text-amber-600 font-medium">{adCountdown} segundos</p>
             </div>
           </div>
         )}
