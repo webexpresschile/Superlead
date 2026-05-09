@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import type { Session } from '@supabase/supabase-js'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -9,9 +10,8 @@ import { Badge } from '@/components/ui/badge'
 import { Search, Download, LogOut, Target, Loader2 } from 'lucide-react'
 
 export default function Dashboard() {
-  const [session, setSession] = useState(null)
-  const [leads, setLeads] = useState([])
-  const [searches, setSearches] = useState([])
+  const [session, setSession] = useState<Session | null>(null)
+  const [leads, setLeads] = useState<any[]>([])
   const [query, setQuery] = useState('')
   const [location, setLocation] = useState('')
   const [loading, setLoading] = useState(false)
@@ -21,15 +21,20 @@ export default function Dashboard() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
       if (session) {
-        loadSearches(session.access_token)
+        loadLeads(session.access_token)
         loadCredits(session.access_token)
       }
     })
   }, [])
 
-  async function loadSearches(token: string) {
-    const res = await fetch('/api/search?type=history', {
-      headers: { Authorization: `Bearer ${token}` }
+  async function loadLeads(token: string) {
+    const res = await fetch('/api/leads/export', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ format: 'json' }),
     })
     const data = await res.json()
     if (data.leads) setLeads(data.leads)
@@ -37,12 +42,12 @@ export default function Dashboard() {
 
   async function loadCredits(token: string) {
     const { data } = await supabase.from('users').select('credits_used, credits_limit').single()
-    if (data) setCredits(data)
+    if (data) setCredits({ used: data.credits_used ?? 0, limit: data.credits_limit ?? 50 })
   }
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault()
-    if (!query || !location) return
+    if (!query || !location || !session) return
     setLoading(true)
     try {
       const res = await fetch('/api/search', {
@@ -57,7 +62,7 @@ export default function Dashboard() {
       if (data.error) throw new Error(data.error)
       setLeads(prev => [...data.leads, ...prev])
       setCredits(prev => ({ ...prev, used: prev.used + data.total }))
-    } catch (e) {
+    } catch (e: any) {
       alert(e.message)
     } finally {
       setLoading(false)
@@ -65,6 +70,7 @@ export default function Dashboard() {
   }
 
   async function handleExport() {
+    if (!session) return
     const res = await fetch('/api/leads/export', {
       method: 'POST',
       headers: {

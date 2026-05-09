@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     // Batch enrich with DeepSeek (in batches of 10)
     const enriched = await enrichLeads(
       places.map(p => ({
-        name: p.displayName?.text || p.displayName || '',
+        name: (typeof p.displayName === 'object' ? p.displayName?.text : p.displayName) || '',
         types: p.types || [],
         rating: p.rating || null,
         reviews_count: p.userRatingCount || null,
@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
     const leads = places.map((place, i) => ({
       search_id: search.id,
       user_id: user.id,
-      name: place.displayName?.text || place.displayName || '',
+      name: (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || '',
       address: place.formattedAddress || null,
       phone: place.nationalPhoneNumber || null,
       website: place.websiteUri || null,

@@ -1,8 +1,13 @@
 const BASE_URL = 'https://places.googleapis.com/v1'
 
+interface DisplayName {
+  text: string
+  languageCode?: string
+}
+
 interface GooglePlace {
   id: string
-  displayName: string
+  displayName: DisplayName | string
   formattedAddress: string
   nationalPhoneNumber: string | null
   websiteUri: string | null
