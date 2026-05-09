@@ -7,7 +7,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Search, Download, Target, Loader2 } from 'lucide-react'
+import { Search, Download, Target, Loader2, ShoppingCart } from 'lucide-react'
+
+const LEAD_OPTIONS = [10, 20, 30, 40, 50, 60]
 
 export default function Dashboard() {
   const { isSignedIn, user } = useUser()
@@ -15,8 +17,14 @@ export default function Dashboard() {
   const [leads, setLeads] = useState<any[]>([])
   const [query, setQuery] = useState('')
   const [location, setLocation] = useState('')
+  const [maxResults, setMaxResults] = useState(20)
   const [loading, setLoading] = useState(false)
-  const [credits, setCredits] = useState({ used: 0, limit: 50 })
+  const [credits, setCredits] = useState({
+    used: 0,
+    limit: 50,
+    used_today: 0,
+    daily_limit: 7,
+  })
 
   useEffect(() => {
     if (isSignedIn) {
@@ -45,10 +53,17 @@ export default function Dashboard() {
     if (!token) return
     const { data } = await supabase
       .from('users')
-      .select('credits_used, credits_limit')
+      .select('credits_used, credits_limit, credits_used_today, daily_limit')
       .eq('auth_id', user?.id)
       .single()
-    if (data) setCredits({ used: data.credits_used ?? 0, limit: data.credits_limit ?? 50 })
+    if (data) {
+      setCredits({
+        used: data.credits_used ?? 0,
+        limit: data.credits_limit ?? 50,
+        used_today: data.credits_used_today ?? 0,
+        daily_limit: data.daily_limit ?? 7,
+      })
+    }
   }
 
   async function handleSearch(e: React.FormEvent) {
@@ -63,14 +78,25 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ query, location }),
+        body: JSON.stringify({ query, location, max_results: maxResults }),
       })
       const data = await res.json()
       if (data.error) throw new Error(data.error)
       setLeads(prev => [...data.leads, ...prev])
-      setCredits(prev => ({ ...prev, used: prev.used + data.total }))
+      setCredits({
+        used: data.credits.used,
+        limit: data.credits.limit,
+        used_today: data.credits.used_today,
+        daily_limit: data.credits.daily_limit,
+      })
     } catch (e: any) {
-      alert(e.message)
+      if (e.message.includes('diario')) {
+        alert('📅 Límite diario alcanzado. Vuelve mañana o compra más créditos.')
+      } else if (e.message.includes('mensual')) {
+        alert('📊 Límite mensual alcanzado. Compra más créditos.')
+      } else {
+        alert(e.message)
+      }
     } finally {
       setLoading(false)
     }
@@ -123,9 +149,10 @@ export default function Dashboard() {
             <span className="font-bold">Superlead</span>
           </div>
           <div className="flex items-center gap-4">
-            <Badge variant="secondary" className="text-xs">
-              {credits.used}/{credits.limit} leads
-            </Badge>
+            <Button variant="outline" size="sm" className="text-xs gap-2">
+              <ShoppingCart className="w-3 h-3" />
+              Comprar créditos
+            </Button>
             <UserButton />
           </div>
         </div>
@@ -134,7 +161,7 @@ export default function Dashboard() {
       <main className="max-w-6xl mx-auto px-4 py-8">
         {/* Search Form */}
         <Card className="mb-8">
-          <CardContent className="pt-6">
+          <CardContent className="pt-6 space-y-4">
             <form onSubmit={handleSearch} className="flex gap-4">
               <div className="flex-1">
                 <Input
@@ -155,11 +182,35 @@ export default function Dashboard() {
                 Buscar
               </Button>
             </form>
+
+            {/* Lead quantity selector */}
+            <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
+              <span className="text-sm text-gray-500">Leads por búsqueda:</span>
+              <div className="flex gap-2">
+                {LEAD_OPTIONS.map(n => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setMaxResults(n)}
+                    className={`px-3 py-1.5 text-sm rounded-lg border transition-all ${
+                      maxResults === n
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <span className="text-xs text-gray-400 ml-auto">
+                {credits.used_today}/{credits.daily_limit} usados hoy
+              </span>
+            </div>
           </CardContent>
         </Card>
 
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-4 gap-4 mb-8">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm text-gray-500">Leads encontrados</CardTitle>
@@ -178,10 +229,32 @@ export default function Dashboard() {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-gray-500">Créditos</CardTitle>
+              <CardTitle className="text-sm text-gray-500">Créditos del mes</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-3xl font-bold">{credits.limit - credits.used} <span className="text-lg text-gray-400">restantes</span></p>
+              <p className="text-3xl font-bold">
+                <span className={credits.limit - credits.used <= 5 ? 'text-red-500' : ''}>
+                  {credits.limit - credits.used}
+                </span>
+                <span className="text-lg text-gray-400">/{credits.limit}</span>
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm text-gray-500">Hoy</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2">
+                <p className="text-3xl font-bold">{credits.daily_limit - credits.used_today}</p>
+                <p className="text-sm text-gray-400">/{credits.daily_limit}</p>
+                <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 rounded-full transition-all"
+                    style={{ width: `${(credits.used_today / credits.daily_limit) * 100}%` }}
+                  />
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>

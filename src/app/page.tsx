@@ -1,7 +1,10 @@
+'use client'
+
 import Link from 'next/link'
+import { useUser } from '@clerk/nextjs'
 import { Search, Download, Sparkles, BarChart3, Building2, Target } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { SignInButton, SignUpButton } from '@clerk/nextjs'
+import { SignInButton, SignUpButton, UserButton } from '@clerk/nextjs'
 
 const features = [
   {
@@ -66,6 +69,8 @@ const plans = [
 ]
 
 export default function Home() {
+  const { isSignedIn } = useUser()
+
   return (
     <div className="min-h-screen bg-white">
       {/* Header */}
@@ -81,12 +86,23 @@ export default function Home() {
             <Link href="/dashboard" className="hover:text-gray-900">Dashboard</Link>
           </nav>
           <div className="flex items-center gap-3">
-            <SignInButton mode="modal">
-              <Button variant="ghost" size="sm">Iniciar sesión</Button>
-            </SignInButton>
-            <SignUpButton mode="modal">
-              <Button size="sm">Registrarse</Button>
-            </SignUpButton>
+            {isSignedIn ? (
+              <>
+                <Link href="/dashboard">
+                  <Button size="sm">Ir al Dashboard</Button>
+                </Link>
+                <UserButton />
+              </>
+            ) : (
+              <>
+                <SignInButton mode="modal">
+                  <Button variant="ghost" size="sm">Iniciar sesión</Button>
+                </SignInButton>
+                <SignUpButton mode="modal">
+                  <Button size="sm">Registrarse</Button>
+                </SignUpButton>
+              </>
+            )}
           </div>
         </div>
       </header>
