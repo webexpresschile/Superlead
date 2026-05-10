@@ -3,7 +3,7 @@ import { auth } from '@clerk/nextjs/server'
 import { getServerSupabase } from '@/lib/supabase'
 
 const MAX_ADS_PER_DAY = 2
-const EXTRA_CREDITS_PER_AD = 7
+const EXTRA_SEARCHES_PER_AD = 1 // 1 ad = 1 búsqueda diaria extra
 
 export async function POST(req: NextRequest) {
   try {
@@ -31,7 +31,6 @@ export async function POST(req: NextRequest) {
     let adsWatchedToday = profile.ads_watched_today || 0
     let adsExtra = profile.ads_extra_daily || 0
 
-    // Reset if new day
     if (!lastActive || lastActive !== today) {
       adsWatchedToday = 0
       adsExtra = 0
@@ -44,10 +43,11 @@ export async function POST(req: NextRequest) {
       }, { status: 429 })
     }
 
-    // Add extra daily credits
-    const newAdsExtra = adsExtra + EXTRA_CREDITS_PER_AD
+    // Add 1 extra daily search
+    const newAdsExtra = adsExtra + EXTRA_SEARCHES_PER_AD
     const newAdsWatched = adsWatchedToday + 1
-    const effectiveDailyLimit = (profile.daily_limit || 7) + newAdsExtra
+    const baseDaily = profile.daily_limit || 1
+    const effectiveDaily = baseDaily + newAdsExtra
 
     await db
       .from('users')
@@ -60,15 +60,15 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      extra_credits: EXTRA_CREDITS_PER_AD,
+      extra_searches: EXTRA_SEARCHES_PER_AD,
       ads_extra_daily: newAdsExtra,
-      effective_daily_limit: effectiveDailyLimit,
+      effective_daily_limit: effectiveDaily,
       ads_watched_today: newAdsWatched,
       ads_remaining: MAX_ADS_PER_DAY - newAdsWatched,
-      message: `¡+${EXTRA_CREDITS_PER_AD} créditos diarios extra! Límite hoy: ${effectiveDailyLimit}`,
+      message: `✅ +${EXTRA_SEARCHES_PER_AD} búsqueda extra hoy. Límite: ${effectiveDaily}`,
     })
   } catch (error: any) {
     console.error('Unlock error:', error)
-    return NextResponse.json({ error: error.message || 'Error al desbloquear créditos' }, { status: 500 })
+    return NextResponse.json({ error: error.message || 'Error al desbloquear' }, { status: 500 })
   }
 }

@@ -7,11 +7,11 @@ import { extractEmail } from '@/lib/email-extractor'
 import { validateSocialMedia } from '@/lib/social-validator'
 import { findWebsite } from '@/lib/website-finder'
 
-const PLAN_CONFIG: Record<string, { credits_limit: number; daily_limit: number }> = {
-  free:    { credits_limit: 50,  daily_limit: 7 },
-  starter: { credits_limit: 200,  daily_limit: 7 },
-  pro:     { credits_limit: 1000, daily_limit: 30 },
-  agency:  { credits_limit: 5000, daily_limit: 150 },
+const PLAN_CONFIG: Record<string, { searches: number; leads_per_search: number; daily_searches: number }> = {
+  free:    { searches: 2,   leads_per_search: 10,  daily_searches: 1 },
+  starter: { searches: 10,  leads_per_search: 20,  daily_searches: 3 },
+  pro:     { searches: 20,  leads_per_search: 50,  daily_searches: 5 },
+  agency:  { searches: 30,  leads_per_search: 100, daily_searches: 10 },
 }
 
 export async function POST(req: NextRequest) {
@@ -29,6 +29,7 @@ export async function POST(req: NextRequest) {
       .single()
 
     if (!profile) {
+      const config = PLAN_CONFIG.free
       const { data: newUser, error: createError } = await db
         .from('users')
         .insert({
@@ -37,9 +38,9 @@ export async function POST(req: NextRequest) {
           name: 'User',
           plan: 'free',
           credits_used: 0,
-          credits_limit: 50,
+          credits_limit: config.searches,
           credits_used_today: 0,
-          daily_limit: 7,
+          daily_limit: config.daily_searches,
         })
         .select()
         .single()
@@ -52,78 +53,78 @@ export async function POST(req: NextRequest) {
 
     if (!profile) throw new Error('No se pudo crear el perfil')
 
-    // Reset daily counter if new day
+    // Reset counters if new day
     const today = new Date().toDateString()
     const lastActive = profile.last_active
       ? new Date(profile.last_active).toDateString()
       : null
-    let creditsUsedToday = profile.credits_used_today || 0
 
-    if (!lastActive || lastActive !== today) {
-      creditsUsedToday = 0
-      await db
-        .from('users')
-        .update({ credits_used_today: 0, last_active: new Date().toISOString() })
-        .eq('id', profile.id)
-    }
-
-    // Reset daily ad counters if new day
+    let searchesToday = profile.credits_used_today || 0
     let adsExtra = profile.ads_extra_daily || 0
     let adsWatched = profile.ads_watched_today || 0
 
     if (!lastActive || lastActive !== today) {
+      searchesToday = 0
       adsExtra = 0
       adsWatched = 0
-      await db
+      const { error: resetErr } = await db
         .from('users')
-        .update({ ads_extra_daily: 0, ads_watched_today: 0 })
+        .update({
+          credits_used_today: 0,
+          ads_extra_daily: 0,
+          ads_watched_today: 0,
+          last_active: new Date().toISOString(),
+        })
         .eq('id', profile.id)
+      if (resetErr) console.error('Reset error:', resetErr)
     }
 
     // Plan config
     const config = PLAN_CONFIG[profile.plan] || PLAN_CONFIG.free
-    const creditsLimit = profile.credits_limit || config.credits_limit
-    const baseDailyLimit = profile.daily_limit || config.daily_limit
-    const effectiveDailyLimit = baseDailyLimit + adsExtra
-    const remainingTotal = creditsLimit - (profile.credits_used || 0)
-    const remainingDaily = effectiveDailyLimit - creditsUsedToday
+    const searchesLimit = profile.credits_limit || config.searches
+    const baseDaily = profile.daily_limit || config.daily_searches
+    const effectiveDaily = baseDaily + adsExtra
+    const remainingSearches = searchesLimit - (profile.credits_used || 0)
+    const remainingDaily = effectiveDaily - searchesToday
 
-    if (remainingTotal <= 0) {
+    // Check limits
+    if (remainingSearches <= 0) {
       return NextResponse.json(
-        { error: 'Límite mensual alcanzado. Compra más créditos.', code: 'limit_exceeded' },
+        { error: 'Plan completado. Cambia a un plan superior para seguir buscando.', code: 'limit_exceeded' },
         { status: 403 }
       )
     }
     if (remainingDaily <= 0) {
       return NextResponse.json(
-        { error: 'Límite diario alcanzado. Vuelve mañana.', code: 'daily_limit_exceeded' },
+        { error: 'Límite diario alcanzado. Ve el botón dorado y desbloquea +1 búsqueda viendo un anuncio.', code: 'daily_limit_exceeded' },
         { status: 429 }
       )
     }
 
     // Parse request body
-    const { keyword, location, limit: requestedLimit = 20, reference_point } = await req.json()
+    const { keyword, location, limit: requestedLimit = config.leads_per_search, reference_point } = await req.json()
 
     if (!keyword || !location) {
       return NextResponse.json({ error: 'keyword y location son requeridos' }, { status: 400 })
     }
 
-    const limit = Math.min(requestedLimit, remainingTotal, remainingDaily, 60)
+    // Cap leads per search to the plan's max
+    const leadsToFetch = Math.min(requestedLimit, config.leads_per_search, 60)
 
-    if (limit <= 0) {
-      return NextResponse.json({ error: 'Sin créditos disponibles' }, { status: 403 })
+    if (leadsToFetch <= 0) {
+      return NextResponse.json({ error: 'Cantidad inválida' }, { status: 400 })
     }
 
     // Search Google Places
-    console.log(`Searching: "${keyword}" in "${location}", ref="${reference_point || '-'}", limit=${limit}`)
+    console.log(`Search [${profile.plan}]: "${keyword}" in "${location}", ref="${reference_point || '-'}", leads=${leadsToFetch}`)
     const places: EnrichedPlace[] = await searchPlaces({
       query: keyword,
       location,
       referencePoint: reference_point,
-      limit,
+      limit: leadsToFetch,
     })
 
-    const affordable = places.slice(0, limit)
+    const affordable = places.slice(0, leadsToFetch)
     console.log(`Got ${affordable.length} places`)
 
     // Enrich with DeepSeek
@@ -138,7 +139,7 @@ export async function POST(req: NextRequest) {
       }))
     )
 
-    // Extract emails + social media + website (parallel, sequential per lead to avoid rate limits)
+    // Extract emails + social media + website (parallel per lead)
     const enrichResults = await Promise.allSettled(
       affordable.map(async (place, i) => {
         const name = (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || ''
@@ -160,7 +161,7 @@ export async function POST(req: NextRequest) {
         location,
         radius: 5,
         reference_point: reference_point || null,
-        limit_leads: limit,
+        limit_leads: leadsToFetch,
         results_count: 0,
       })
       .select()
@@ -179,7 +180,6 @@ export async function POST(req: NextRequest) {
       const websiteFound = enrichment?.status === 'fulfilled'
         ? enrichment.value.websiteResult?.url
         : null
-      // Use website from search/find if Google didn't provide one
       const websiteUrl = place.websiteUri || websiteFound
 
       return {
@@ -210,7 +210,7 @@ export async function POST(req: NextRequest) {
       }
     })
 
-    // Upsert: si el place_id ya existe, se salta el duplicado (no falla)
+    // Upsert leads (skip duplicates)
     const { data: savedLeads, error: insertError } = await db
       .from('leads')
       .upsert(leads, { onConflict: 'place_id', ignoreDuplicates: true })
@@ -220,19 +220,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Error al guardar leads: ' + insertError.message }, { status: 500 })
     }
 
-    // Count only actually inserted (no duplicados)
+    // Count inserted leads
     const insertedCount = savedLeads?.length || 0
     const skippedCount = leads.length - insertedCount
 
-    // Update counters
-    const newTotal = (profile.credits_used || 0) + insertedCount
-    const newDaily = creditsUsedToday + insertedCount
+    // Deduct 1 search credit (no por lead)
+    const newTotalSearch = (profile.credits_used || 0) + 1
+    const newSearchesToday = searchesToday + 1
 
     await Promise.all([
       db.from('searches').update({ results_count: insertedCount }).eq('id', search.id),
       db.from('users').update({
-        credits_used: newTotal,
-        credits_used_today: newDaily,
+        credits_used: newTotalSearch,
+        credits_used_today: newSearchesToday,
         last_active: new Date().toISOString(),
       }).eq('id', profile.id),
     ])
@@ -240,17 +240,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       search_id: search.id,
-      total: insertedCount,
+      leads_got: insertedCount,
       skipped_duplicates: skippedCount,
       leads: savedLeads,
-      credits_used: insertedCount,
-      credits_remaining: creditsLimit - newTotal,
-      credits: {
-        used: newTotal,
-        limit: creditsLimit,
-        used_today: newDaily,
-        daily_limit: effectiveDailyLimit,
-        base_daily: baseDailyLimit,
+      plan: {
+        name: profile.plan,
+        searches_used: newTotalSearch,
+        searches_limit: searchesLimit,
+        searches_today: newSearchesToday,
+        daily_limit: effectiveDaily,
+        base_daily: baseDaily,
+        ads_extra: adsExtra,
+        searches_remaining: searchesLimit - newTotalSearch,
+        leads_per_search: config.leads_per_search,
       },
     })
   } catch (error: any) {

@@ -9,7 +9,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Search, Download, Target, Loader2, ExternalLink, Zap, X, Play } from 'lucide-react'
 
-
+const PLAN_LABELS: Record<string, { name: string; leads_per_search: number }> = {
+  free:    { name: 'Gratis',  leads_per_search: 10 },
+  starter: { name: 'Starter', leads_per_search: 20 },
+  pro:     { name: 'Pro',     leads_per_search: 50 },
+  agency:  { name: 'Agency',  leads_per_search: 100 },
+}
 
 interface Lead {
   id: string
@@ -29,6 +34,26 @@ interface Lead {
   search_id: string
 }
 
+interface PlanInfo {
+  searches_used: number
+  searches_limit: number
+  searches_today: number
+  daily_limit: number
+  base_daily: number
+  ads_extra: number
+  searches_remaining: number
+  leads_per_search: number
+}
+
+function getLeadOptions(planName: string): number[] {
+  const max = PLAN_LABELS[planName]?.leads_per_search || 10
+  const steps = max <= 10 ? [5, 10]
+    : max <= 20 ? [10, 15, 20]
+    : max <= 50 ? [10, 20, 30, 40, 50]
+    : [10, 25, 50, 75, 100]
+  return steps.filter(n => n <= max)
+}
+
 export default function Dashboard() {
   const { isSignedIn, user } = useUser()
   const { getToken } = useAuth()
@@ -36,16 +61,16 @@ export default function Dashboard() {
   const [keyword, setKeyword] = useState('')
   const [location, setLocation] = useState('')
   const [referencePoint, setReferencePoint] = useState('')
-  const [limit, setLimit] = useState(20)
+  const [leadsCount, setLeadsCount] = useState(10)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [credits, setCredits] = useState({
-    used: 0,
-    limit: 50,
-    used_today: 0,
-    daily_limit: 7,
-    base_daily: 7,
+  const [plan, setPlan] = useState<PlanInfo>({
+    searches_used: 0, searches_limit: 2,
+    searches_today: 0, daily_limit: 1, base_daily: 1,
+    ads_extra: 0, searches_remaining: 2, leads_per_search: 10,
   })
+  const [userPlan, setUserPlan] = useState('free')
+  const [searchesList, setSearchesList] = useState<number>(0)
   const [adsWatched, setAdsWatched] = useState(0)
   const [showAdModal, setShowAdModal] = useState(false)
   const [adWatching, setAdWatching] = useState(false)
@@ -54,14 +79,15 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (isSignedIn) {
-      loadLeads()
-      loadCredits()
+      loadData()
     }
   }, [isSignedIn])
 
-  async function loadLeads() {
+  async function loadData() {
     const token = await getToken()
     if (!token) return
+
+    // Load leads
     const res = await fetch('/api/leads/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -69,51 +95,58 @@ export default function Dashboard() {
     })
     const data = await res.json()
     if (data.leads) setLeads(data.leads)
-  }
 
-  async function loadCredits() {
-    const token = await getToken()
-    if (!token) return
-    const { data } = await supabase
+    // Load user profile
+    const { data: prof } = await supabase
       .from('users')
-      .select('credits_used, credits_limit, credits_used_today, daily_limit, ads_watched_today, ads_extra_daily')
+      .select('plan, credits_used, credits_limit, credits_used_today, daily_limit, ads_watched_today, ads_extra_daily')
       .eq('auth_id', user?.id)
       .single()
-    if (data) {
-      const baseDaily = data.daily_limit ?? 7
-      const adExtra = data.ads_extra_daily ?? 0
-      setCredits({
-        used: data.credits_used ?? 0,
-        limit: data.credits_limit ?? 50,
-        used_today: data.credits_used_today ?? 0,
+    if (prof) {
+      const adExtra = prof.ads_extra_daily ?? 0
+      const baseDaily = prof.daily_limit ?? 1
+      const planInfo = PLAN_LABELS[prof.plan] || PLAN_LABELS.free
+      setPlan({
+        searches_used: prof.credits_used ?? 0,
+        searches_limit: prof.credits_limit ?? 2,
+        searches_today: prof.credits_used_today ?? 0,
         daily_limit: baseDaily + adExtra,
         base_daily: baseDaily,
+        ads_extra: adExtra,
+        searches_remaining: (prof.credits_limit ?? 2) - (prof.credits_used ?? 0),
+        leads_per_search: planInfo.leads_per_search,
       })
-      setAdsWatched(data.ads_watched_today ?? 0)
+      setUserPlan(prof.plan)
+      setLeadsCount(planInfo.leads_per_search)
+      setAdsWatched(prof.ads_watched_today ?? 0)
+      setSearchesList(new Set(/* we'll estimate from leads */).size)
     }
   }
 
+  // Count unique searches from leads
+  useEffect(() => {
+    setSearchesList(new Set(leads.map(l => l.search_id)).size)
+  }, [leads])
+
   const maxAdsReached = adsWatched >= 2
-  const effectiveDailyLimit = credits.daily_limit
-  const remainingToday = effectiveDailyLimit - credits.used_today
+  const remainingToday = plan.daily_limit - plan.searches_today
+  const dailyProgress = plan.daily_limit > 0
+    ? (plan.searches_today / plan.daily_limit) * 100
+    : 0
+  const leadOptions = getLeadOptions(userPlan)
 
   async function handleAdWatch() {
     setAdWatching(true)
     setAdCountdown(15)
     setAdMessage('')
 
-    // Countdown timer
     const timer = setInterval(() => {
       setAdCountdown(prev => {
-        if (prev <= 1) {
-          clearInterval(timer)
-          return 0
-        }
+        if (prev <= 1) { clearInterval(timer); return 0 }
         return prev - 1
       })
     }, 1000)
 
-    // After 15 seconds (simulated ad duration)
     setTimeout(async () => {
       clearInterval(timer)
       try {
@@ -124,17 +157,18 @@ export default function Dashboard() {
         })
         const data = await res.json()
         if (data.success) {
-          setCredits(prev => ({
+          setPlan(prev => ({
             ...prev,
             daily_limit: data.effective_daily_limit,
+            ads_extra: data.ads_extra_daily,
           }))
           setAdsWatched(data.ads_watched_today)
-          setAdMessage(`🎉 ¡+${data.extra_credits} créditos diarios extra!`)
+          setAdMessage(`✅ ¡+${data.extra_searches} búsqueda extra hoy!`)
         } else {
-          setAdMessage(data.error || 'Error al desbloquear')
+          setAdMessage(data.error || 'Error')
         }
       } catch (e: any) {
-        setAdMessage(e.message || 'Error al desbloquear')
+        setAdMessage(e.message || 'Error')
       }
       setAdWatching(false)
     }, 15000)
@@ -145,7 +179,15 @@ export default function Dashboard() {
     setError('')
     if (!keyword.trim()) { setError('Ingresa un rubro'); return }
     if (!location.trim()) { setError('Ingresa una ubicación'); return }
-    if (limit < 1 || limit > 60) { setError('La cantidad debe ser entre 1 y 60'); return }
+
+    if (plan.searches_remaining <= 0) {
+      setError('Completaste tus búsquedas del plan. Cambia a un plan superior.')
+      return
+    }
+    if (remainingToday <= 0) {
+      setError('📅 Límite diario alcanzado. Desbloquea +1 búsqueda con el botón dorado.')
+      return
+    }
 
     setLoading(true)
     try {
@@ -153,29 +195,19 @@ export default function Dashboard() {
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ keyword, location, limit, reference_point: referencePoint || null }),
+        body: JSON.stringify({ keyword, location, limit: leadsCount, reference_point: referencePoint || null }),
       })
       const data = await res.json()
       if (!data.success) throw new Error(data.error || 'Error al buscar')
 
-      // Update credits from response
-      if (data.credits) {
-        setCredits(prev => ({
-          ...prev,
-          used: data.credits.used,
-          limit: data.credits.limit,
-          used_today: data.credits.used_today,
-          daily_limit: data.credits.daily_limit,
-          base_daily: data.credits.base_daily || prev.base_daily,
-        }))
+      if (data.plan) {
+        setPlan(data.plan)
       }
-      setLeads(prev => [...data.leads, ...prev])
+      if (data.leads) {
+        setLeads(prev => [...data.leads, ...prev])
+      }
     } catch (e: any) {
-      if (e.message.includes('diario')) {
-        setError('📅 Límite diario alcanzado. ¡Ve el botón dorado y desbloquea +7 créditos viendo un anuncio!')
-      } else {
-        setError(e.message)
-      }
+      setError(e.message)
     } finally {
       setLoading(false)
     }
@@ -215,7 +247,7 @@ export default function Dashboard() {
     )
   }
 
-  // Ad Modal with Adsterra
+  // Ad Modal
   const AdModal = () => (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => !adWatching && setShowAdModal(false)}>
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -223,15 +255,11 @@ export default function Dashboard() {
           <>
             <div className="flex justify-between items-start mb-4">
               <div>
-                <h3 className="text-xl font-bold">Desbloquea +7 créditos diarios</h3>
-                <p className="text-gray-500 text-sm mt-1">Mira este anuncio y obtén más búsquedas hoy</p>
+                <h3 className="text-xl font-bold">+1 búsqueda extra hoy</h3>
+                <p className="text-gray-500 text-sm mt-1">Mira el anuncio y desbloquéala</p>
               </div>
-              <button onClick={() => setShowAdModal(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setShowAdModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
             </div>
-
-            {/* Adsterra ad banner */}
             <div className="bg-gray-100 border border-gray-200 rounded-xl my-4 overflow-hidden flex items-center justify-center" style={{ minHeight: '250px' }}>
               <iframe
                 src="/api/ads/serve?width=300&height=250"
@@ -240,19 +268,14 @@ export default function Dashboard() {
                 sandbox="allow-scripts allow-same-origin allow-popups"
               />
             </div>
-
-            {credits.base_daily && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-center">
-                <p className="text-sm text-amber-800">
-                  Hoy: <strong>{credits.base_daily}/{credits.base_daily}</strong> → <strong>{credits.base_daily + 7}/{credits.base_daily + 7}</strong> (1er anuncio)
-                </p>
-                <p className="text-xs text-amber-600 mt-1">Máximo 2 anuncios/día = +14 créditos</p>
-              </div>
-            )}
-
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-center">
+              <p className="text-sm text-amber-800">
+                Hoy: <strong>{plan.base_daily}/{plan.base_daily}</strong> → <strong>{plan.base_daily + 1}/{plan.base_daily + 1}</strong>
+              </p>
+              <p className="text-xs text-amber-600 mt-1">Máx 2 anuncios/día = +2 búsquedas</p>
+            </div>
             <Button onClick={handleAdWatch} className="w-full bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-600 hover:to-yellow-600 text-white font-bold text-lg py-6 shadow-lg">
-              <Play className="w-5 h-5 mr-2" />
-              Ver anuncio (15 seg)
+              <Play className="w-5 h-5 mr-2" /> Ver anuncio (15 seg)
             </Button>
           </>
         )}
@@ -260,21 +283,11 @@ export default function Dashboard() {
         {adWatching && (
           <div className="text-center">
             <div className="bg-gray-100 border border-gray-200 rounded-xl my-4 overflow-hidden">
-              {/* Show ad during countdown */}
-              <iframe
-                src="/api/ads/serve?width=300&height=250"
-                style={{ width: 300, height: 250, border: 'none' }}
-                title="Adsterra"
-                sandbox="allow-scripts allow-same-origin allow-popups"
-              />
-              {/* Progress bar below ad */}
+              <iframe src="/api/ads/serve?width=300&height=250" style={{ width: 300, height: 250, border: 'none' }} title="Ad" sandbox="allow-scripts allow-same-origin allow-popups" />
               <div className="p-4 pt-2">
                 <p className="font-bold text-gray-800 mb-2">Reproduciendo anuncio...</p>
                 <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
-                  <div
-                    className="h-4 bg-gradient-to-r from-amber-500 to-yellow-500 rounded-full transition-all duration-1000"
-                    style={{ width: `${((15 - adCountdown) / 15) * 100}%` }}
-                  />
+                  <div className="h-4 bg-gradient-to-r from-amber-500 to-yellow-500 rounded-full transition-all duration-1000" style={{ width: `${((15 - adCountdown) / 15) * 100}%` }} />
                 </div>
                 <p className="text-sm text-amber-600 font-medium">{adCountdown} segundos</p>
               </div>
@@ -287,22 +300,14 @@ export default function Dashboard() {
             <div className="bg-green-50 border border-green-200 rounded-xl p-6 my-4">
               <div className="text-5xl mb-2">✅</div>
               <p className="text-green-800 font-bold text-lg">{adMessage}</p>
-              <p className="text-xs text-green-600 mt-2">
-                Límite diario: {effectiveDailyLimit} créditos
-              </p>
+              <p className="text-xs text-green-600 mt-2">Límite diario: {plan.daily_limit} búsquedas</p>
             </div>
-            <Button onClick={() => { setShowAdModal(false); setAdMessage('') }} className="w-full">
-              ¡A buscar leads!
-            </Button>
+            <Button onClick={() => { setShowAdModal(false); setAdMessage('') }} className="w-full">¡A buscar!</Button>
           </div>
         )}
       </div>
     </div>
   )
-
-  const dailyProgressPercent = effectiveDailyLimit > 0
-    ? (credits.used_today / effectiveDailyLimit) * 100
-    : 0
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -314,12 +319,12 @@ export default function Dashboard() {
           <div className="flex items-center gap-2">
             <Target className="w-5 h-5 text-blue-600" />
             <span className="font-bold">Superlead</span>
+            <Badge variant="outline" className="text-xs ml-1">{PLAN_LABELS[userPlan]?.name || 'Gratis'}</Badge>
           </div>
           <div className="flex items-center gap-3">
-            {/* Gold ad unlock button */}
             <button
               onClick={() => setShowAdModal(true)}
-              disabled={maxAdsReached || effectiveDailyLimit >= 100}
+              disabled={maxAdsReached || plan.searches_today >= plan.daily_limit + (plan.ads_extra > 0 ? 1 : 0)}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-lg ${
                 maxAdsReached
                   ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
@@ -327,10 +332,7 @@ export default function Dashboard() {
               }`}
             >
               <Zap className="w-4 h-4" />
-              {maxAdsReached
-                ? 'Usaste tus 2 anuncios'
-                : `+7 créditos (${remainingToday}/${effectiveDailyLimit})`
-              }
+              {maxAdsReached ? 'Usaste 2 anuncios' : `+1 búsqueda`}
             </button>
             <UserButton />
           </div>
@@ -338,6 +340,45 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-8">
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-4 mb-8">
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Búsquedas del plan</CardTitle></CardHeader>
+            <CardContent>
+              <p className="text-3xl font-bold">{plan.searches_used}/{plan.searches_limit}</p>
+              <p className="text-xs text-gray-400 mt-1">{plan.searches_remaining} restantes</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Leads totales</CardTitle></CardHeader>
+            <CardContent><p className="text-3xl font-bold">{leads.length}</p></CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Por búsqueda</CardTitle></CardHeader>
+            <CardContent><p className="text-3xl font-bold">{plan.leads_per_search}</p></CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Hoy</CardTitle></CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2">
+                <div className="text-right">
+                  <p className="text-3xl font-bold">{remainingToday}</p>
+                  <p className="text-xs text-gray-400">/{plan.daily_limit}</p>
+                </div>
+                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${dailyProgress > 80 ? 'bg-red-500' : 'bg-blue-600'}`} style={{ width: `${Math.min(dailyProgress, 100)}%` }} />
+                </div>
+              </div>
+              {plan.ads_extra > 0 && (
+                <div className="flex items-center gap-1 mt-1">
+                  <Zap className="w-3 h-3 text-amber-500" />
+                  <p className="text-xs text-amber-600">+{plan.ads_extra} por anuncios</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Search Form */}
         <Card className="mb-8">
           <CardContent className="pt-6 space-y-4">
@@ -345,7 +386,7 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Rubro</label>
-                  <Input placeholder="Ej: Restaurantes, Dentistas, Gimnasios" value={keyword} onChange={e => setKeyword(e.target.value)} disabled={loading} />
+                  <Input placeholder="Ej: Restaurantes, Dentistas" value={keyword} onChange={e => setKeyword(e.target.value)} disabled={loading} />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Ubicación</label>
@@ -359,15 +400,16 @@ export default function Dashboard() {
                     Punto de Referencia <span className="text-gray-300">(opcional)</span>
                   </label>
                   <Input placeholder="Ej: Av. Providencia 2000" value={referencePoint} onChange={e => setReferencePoint(e.target.value)} disabled={loading} />
-                  <p className="text-xs text-gray-400 mt-1">Búsqueda desde este punto, se expande si es necesario</p>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">Cantidad</label>
+                  <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">
+                    Leads por búsqueda <span className="text-gray-300">(máx {plan.leads_per_search})</span>
+                  </label>
                   <div className="flex gap-2 items-center flex-wrap">
-                    {[10, 20, 30, 40, 50, 60].map(n => (
-                      <button key={n} type="button" onClick={() => setLimit(n)}
+                    {leadOptions.map(n => (
+                      <button key={n} type="button" onClick={() => setLeadsCount(n)}
                         className={`px-3 py-1.5 text-sm rounded-lg border transition-all ${
-                          limit === n ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
+                          leadsCount === n ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
                         }`}
                       >
                         {n}
@@ -383,64 +425,21 @@ export default function Dashboard() {
 
               <div className="flex items-center justify-between">
                 <span className="text-xs text-gray-400">
-                  Hoy: {credits.used_today}/{effectiveDailyLimit} · Mes: {credits.limit - credits.used}/{credits.limit}
+                  Esta búsqueda consume 1 de {plan.searches_remaining} disponibles
                 </span>
-                <Button type="submit" disabled={loading}>
+                <Button type="submit" disabled={loading || plan.searches_remaining <= 0 || remainingToday <= 0}>
                   {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
-                  Buscar Leads
+                  {plan.searches_remaining <= 0 ? 'Plan completo' : remainingToday <= 0 ? 'Límite diario' : 'Buscar'}
                 </Button>
               </div>
             </form>
           </CardContent>
         </Card>
 
-        {/* Stats */}
-        <div className="grid grid-cols-4 gap-4 mb-8">
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Leads encontrados</CardTitle></CardHeader>
-            <CardContent><p className="text-3xl font-bold">{leads.length}</p></CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Búsquedas</CardTitle></CardHeader>
-            <CardContent><p className="text-3xl font-bold">{new Set(leads.map(l => l.search_id)).size}</p></CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Créditos del mes</CardTitle></CardHeader>
-            <CardContent>
-              <p className="text-3xl font-bold">
-                <span className={credits.limit - credits.used <= 5 ? 'text-red-500' : ''}>{credits.limit - credits.used}</span>
-                <span className="text-lg text-gray-400">/{credits.limit}</span>
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm text-gray-500">Hoy</CardTitle></CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2">
-                <div className="text-right">
-                  <p className="text-3xl font-bold">{remainingToday}</p>
-                  <p className="text-xs text-gray-400">/{effectiveDailyLimit}</p>
-                </div>
-                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div className={`h-full rounded-full transition-all ${
-                    dailyProgressPercent > 80 ? 'bg-red-500' : 'bg-blue-600'
-                  }`} style={{ width: `${Math.min(dailyProgressPercent, 100)}%` }} />
-                </div>
-              </div>
-              {effectiveDailyLimit > credits.base_daily && (
-                <div className="flex items-center gap-1 mt-1">
-                  <Zap className="w-3 h-3 text-amber-500" />
-                  <p className="text-xs text-amber-600">+{effectiveDailyLimit - credits.base_daily} por anuncios</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
         {/* Leads Table */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Leads</CardTitle>
+            <CardTitle>Leads ({leads.length})</CardTitle>
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="w-4 h-4 mr-2" /> Exportar CSV
             </Button>

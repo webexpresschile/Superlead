@@ -33,36 +33,44 @@ const plans = [
   {
     name: 'Free',
     price: '$0',
-    leads: '50',
+    searches: '2',
+    perSearch: '10 leads',
+    total: '20 leads',
     desc: 'Para probar',
-    features: ['50 leads/mes', 'CSV y JSON', 'Enriquecimiento IA'],
+    features: ['2 búsquedas · 10 leads c/u', 'CSV y JSON', 'Enriquecimiento IA'],
     cta: 'Empezar gratis',
     featured: false,
   },
   {
     name: 'Starter',
     price: '$9.99',
-    leads: '200',
+    searches: '10',
+    perSearch: '20 leads',
+    total: '200 leads',
     desc: 'Para emprendedores',
-    features: ['200 leads/mes', 'CSV y JSON', 'Enriquecimiento IA', 'Export a GHL'],
+    features: ['10 búsquedas · 20 leads c/u', 'CSV y JSON', 'Enriquecimiento IA', 'Export a GHL'],
     cta: 'Elegir Starter',
     featured: false,
   },
   {
     name: 'Pro',
     price: '$19.99',
-    leads: '1,000',
+    searches: '20',
+    perSearch: '50 leads',
+    total: '1,000 leads',
     desc: 'Para agencias',
-    features: ['1,000 leads/mes', 'CSV y JSON', 'Enriquecimiento IA', 'Export a GHL', 'Soporte prioritario'],
+    features: ['20 búsquedas · 50 leads c/u', 'CSV y JSON', 'Enriquecimiento IA', 'Export a GHL', 'Soporte prioritario'],
     cta: 'Elegir Pro',
     featured: true,
   },
   {
     name: 'Agency',
     price: '$39.99',
-    leads: '5,000',
+    searches: '30',
+    perSearch: '100 leads',
+    total: '3,000 leads',
     desc: 'Para equipos grandes',
-    features: ['5,000 leads/mes', 'CSV y JSON', 'Enriquecimiento IA', 'Export a GHL', 'API access', 'Soporte 24/7'],
+    features: ['30 búsquedas · 100 leads c/u', 'CSV y JSON', 'Enriquecimiento IA', 'Export a GHL', 'API access', 'Soporte 24/7'],
     cta: 'Elegir Agency',
     featured: false,
   },
@@ -178,13 +186,14 @@ export default function Home() {
               >
                 <h3 className="font-bold text-xl mb-1">{plan.name}</h3>
                 <p className="text-sm text-gray-500 mb-4">{plan.desc}</p>
-                <div className="mb-6">
+                <div className="mb-4">
                   <span className="text-4xl font-bold">{plan.price}</span>
                   <span className="text-gray-500">/mes</span>
                 </div>
-                <p className="text-sm mb-4">
-                  <span className="font-semibold">{plan.leads}</span> leads por mes
-                </p>
+                <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm">
+                  <p className="font-semibold">{plan.searches} búsquedas</p>
+                  <p className="text-gray-500">{plan.perSearch} · Total: {plan.total}</p>
+                </div>
                 <ul className="space-y-2 mb-6">
                   {plan.features.map((f) => (
                     <li key={f} className="text-sm text-gray-600 flex items-center gap-2">
