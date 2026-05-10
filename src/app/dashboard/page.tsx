@@ -9,12 +9,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Search, Download, Target, Loader2, ExternalLink, Zap, X, Play } from 'lucide-react'
 
-const PLAN_LABELS: Record<string, { name: string; leads_per_search: number }> = {
-  free:    { name: 'Gratis',  leads_per_search: 10 },
-  starter: { name: 'Starter', leads_per_search: 20 },
-  pro:     { name: 'Pro',     leads_per_search: 50 },
-  agency:  { name: 'Agency',  leads_per_search: 100 },
+const PLAN_CONFIG: Record<string, { name: string; searches: number; leads_per_search: number; daily_searches: number }> = {
+  free:    { name: 'Gratis',  searches: 2,   leads_per_search: 10,  daily_searches: 1 },
+  starter: { name: 'Starter', searches: 10,  leads_per_search: 20,  daily_searches: 3 },
+  pro:     { name: 'Pro',     searches: 20,  leads_per_search: 50,  daily_searches: 5 },
+  agency:  { name: 'Agency',  searches: 30,  leads_per_search: 100, daily_searches: 10 },
 }
+
+const PLAN_LABELS = PLAN_CONFIG
 
 interface Lead {
   id: string
@@ -96,30 +98,29 @@ export default function Dashboard() {
     const data = await res.json()
     if (data.leads) setLeads(data.leads)
 
-    // Load user profile
+    // Load user profile — Plan config SIEMPRE autoritativo
     const { data: prof } = await supabase
       .from('users')
-      .select('plan, credits_used, credits_limit, credits_used_today, daily_limit, ads_watched_today, ads_extra_daily')
+      .select('plan, credits_used, credits_used_today, ads_watched_today, ads_extra_daily')
       .eq('auth_id', user?.id)
       .single()
     if (prof) {
+      const planInfo = PLAN_CONFIG[prof.plan] || PLAN_CONFIG.free
       const adExtra = prof.ads_extra_daily ?? 0
-      const baseDaily = prof.daily_limit ?? 1
-      const planInfo = PLAN_LABELS[prof.plan] || PLAN_LABELS.free
+      const baseDaily = planInfo.daily_searches
       setPlan({
         searches_used: prof.credits_used ?? 0,
-        searches_limit: prof.credits_limit ?? 2,
+        searches_limit: planInfo.searches,
         searches_today: prof.credits_used_today ?? 0,
         daily_limit: baseDaily + adExtra,
         base_daily: baseDaily,
         ads_extra: adExtra,
-        searches_remaining: (prof.credits_limit ?? 2) - (prof.credits_used ?? 0),
+        searches_remaining: planInfo.searches - (prof.credits_used ?? 0),
         leads_per_search: planInfo.leads_per_search,
       })
       setUserPlan(prof.plan)
       setLeadsCount(planInfo.leads_per_search)
       setAdsWatched(prof.ads_watched_today ?? 0)
-      setSearchesList(new Set(/* we'll estimate from leads */).size)
     }
   }
 

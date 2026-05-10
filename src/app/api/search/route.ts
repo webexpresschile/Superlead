@@ -79,10 +79,10 @@ export async function POST(req: NextRequest) {
       if (resetErr) console.error('Reset error:', resetErr)
     }
 
-    // Plan config
+    // Plan config — SIEMPRE autoritativo, ignora valores viejos en DB
     const config = PLAN_CONFIG[profile.plan] || PLAN_CONFIG.free
-    const searchesLimit = profile.credits_limit || config.searches
-    const baseDaily = profile.daily_limit || config.daily_searches
+    const searchesLimit = config.searches
+    const baseDaily = config.daily_searches
     const effectiveDaily = baseDaily + adsExtra
     const remainingSearches = searchesLimit - (profile.credits_used || 0)
     const remainingDaily = effectiveDaily - searchesToday
