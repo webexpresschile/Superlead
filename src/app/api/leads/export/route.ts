@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { getServerSupabase } from '@/lib/supabase'
+import { checkRateLimit } from '@/lib/rate-limit'
 
 export async function POST(req: NextRequest) {
   try {
     const { userId } = await auth()
     if (!userId) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+
+    // Rate limit: max 1 export per 5 seconds per user
+    if (!checkRateLimit(`export:${userId}`, 1, 5_000)) {
+      return NextResponse.json(
+        { error: '⏳ Espera un momento entre exportaciones.' },
+        { status: 429, headers: { 'Retry-After': '5' } }
+      )
+    }
 
     const db = getServerSupabase()
 
@@ -48,6 +57,14 @@ export async function POST(req: NextRequest) {
         'Punto de Referencia',
       ]
 
+      const safeCsv = (val: any): string => {
+        if (val === null || val === undefined) return ''
+        const str = String(val)
+        return str.includes(',') || str.includes('"') || str.includes('\n')
+          ? `"${str.replace(/"/g, '""')}"`
+          : str
+      }
+
       const csvRows = [
         headers.join(','),
         ...leads.map((l: any) =>
@@ -58,21 +75,17 @@ export async function POST(req: NextRequest) {
                 'enriched_category', 'competition_level', 'enriched_description',
                 'facebook_url', 'instagram_url', 'website', 'distance_km', 'reference_point',
               ][i]
-              const val = l[key]
-              if (val === null || val === undefined) return ''
-              const str = String(val)
-              return str.includes(',') || str.includes('"') || str.includes('\n')
-                ? `"${str.replace(/"/g, '""')}"`
-                : str
+              return safeCsv(l[key])
             })
             .join(',')
         ),
       ].join('\n')
 
+      const filename = `superlead-leads${category ? '-' + category : ''}${competition ? '-' + competition : ''}.csv`
       return new NextResponse(csvRows, {
         headers: {
           'Content-Type': 'text/csv; charset=utf-8',
-          'Content-Disposition': `attachment; filename="superlead-leads-${category || 'todos'}-${competition || 'todos'}.csv"`,
+          'Content-Disposition': `attachment; filename="${filename.replace(/[^a-zA-Z0-9\-_.]/g, '_')}"`,
         },
       })
     }

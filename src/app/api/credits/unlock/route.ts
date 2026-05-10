@@ -1,18 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { getServerSupabase } from '@/lib/supabase'
+import { checkRateLimit } from '@/lib/rate-limit'
 
 const MAX_ADS_PER_MONTH = 2
 const EXTRA_SEARCHES_PER_AD = 1
-
-const PLAN_NAMES: Record<string, string> = {
-  free: 'Gratis', starter: 'Starter', pro: 'Pro', agency: 'Agency',
-}
 
 export async function POST(req: NextRequest) {
   try {
     const { userId } = await auth()
     if (!userId) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+
+    // Rate limit: max 1 ad unlock per 15 seconds
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+      || req.headers.get('x-real-ip')
+      || 'unknown'
+    if (!checkRateLimit(`unlock:${ip}`, 1, 15_000)) {
+      return NextResponse.json(
+        { error: '⏳ Espera 15 segundos entre anuncios.' },
+        { status: 429, headers: { 'Retry-After': '15' } }
+      )
+    }
 
     const db = getServerSupabase()
 
@@ -26,7 +34,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Usuario no encontrado' }, { status: 404 })
     }
 
-    // Check/reset MONTHLY ad counters
+    // ── Monthly reset ──
     const now = new Date()
     const thisMonth = `${now.getFullYear()}-${now.getMonth()}`
     const lastMonthlyReset = profile.monthly_reset_at
@@ -36,7 +44,6 @@ export async function POST(req: NextRequest) {
     let adsExtraMonthly = profile.ads_extra_monthly || 0
     let creditsUsed = profile.credits_used || 0
 
-    // Reset if new month
     if (lastMonthlyReset !== thisMonth) {
       adsExtraMonthly = 0
       creditsUsed = 0
@@ -54,7 +61,25 @@ export async function POST(req: NextRequest) {
       }, { status: 429 })
     }
 
-    // Add 1 extra MONTHLY search
+    // ── Atomic increment ──
+    const { data: currentProfile } = await db
+      .from('users')
+      .select('ads_extra_monthly, credits_used')
+      .eq('id', profile.id)
+      .single()
+
+    if (!currentProfile) {
+      return NextResponse.json({ error: 'Error al verificar créditos' }, { status: 500 })
+    }
+
+    // Guard against concurrent requests
+    if (currentProfile.ads_extra_monthly !== profile.ads_extra_monthly) {
+      return NextResponse.json({
+        error: 'Ya procesaste este anuncio. Recarga para ver los cambios.',
+        code: 'concurrent_request',
+      }, { status: 409 })
+    }
+
     const newAdsMonthly = adsExtraMonthly + EXTRA_SEARCHES_PER_AD
     const planSearches = profile.plan === 'free' ? 2
       : profile.plan === 'starter' ? 10

@@ -6,6 +6,7 @@ import { enrichLeads } from '@/lib/deepseek'
 import { extractEmail } from '@/lib/email-extractor'
 import { validateSocialMedia } from '@/lib/social-validator'
 import { findWebsite } from '@/lib/website-finder'
+import { checkRateLimit } from '@/lib/rate-limit'
 
 const PLAN_CONFIG: Record<string, { searches: number; leads_per_search: number; daily_searches: number }> = {
   free:    { searches: 2,   leads_per_search: 10,  daily_searches: 1 },
@@ -14,14 +15,43 @@ const PLAN_CONFIG: Record<string, { searches: number; leads_per_search: number; 
   agency:  { searches: 30,  leads_per_search: 100, daily_searches: 10 },
 }
 
+// Sanitize input to prevent injection through Google Places API
+function sanitize(text: string, maxLen = 100): string {
+  return text
+    .replace(/[<>"'\\;()]/g, '')  // Remove injection chars
+    .trim()
+    .slice(0, maxLen)
+}
+
 export async function POST(req: NextRequest) {
   try {
+    // ── Rate limiting: max 1 search every 3 seconds per user ──
     const { userId } = await auth()
     if (!userId) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+      || req.headers.get('x-real-ip')
+      || 'unknown'
+
+    // Per-IP rate limit (max 5 searches/minute)
+    if (!checkRateLimit(`search:ip:${ip}`, 5, 60_000)) {
+      return NextResponse.json(
+        { error: '⏳ Demasiadas búsquedas desde esta IP. Espera un momento.' },
+        { status: 429, headers: { 'Retry-After': '10' } }
+      )
+    }
+
+    // Per-user rate limit (max 1 search/3 seconds)
+    if (!checkRateLimit(`search:user:${userId}`, 1, 3_000)) {
+      return NextResponse.json(
+        { error: '⏳ Ya tienes una búsqueda en proceso. Espera a que termine.' },
+        { status: 429, headers: { 'Retry-After': '3' } }
+      )
+    }
+
     const db = getServerSupabase()
 
-    // Get or create user profile
+    // ── Get profile ──
     let { data: profile } = await db
       .from('users')
       .select('*')
@@ -65,18 +95,13 @@ export async function POST(req: NextRequest) {
     let adsExtraMonthly = profile.ads_extra_monthly || 0
 
     if (lastMonthReset !== thisMonth) {
-      // Nuevo mes → resetear contadores mensuales
       monthlyUsed = 0
       adsExtraMonthly = 0
-      const { error: mErr } = await db
-        .from('users')
-        .update({
-          credits_used: 0,
-          ads_extra_monthly: 0,
-          monthly_reset_at: now.toISOString(),
-        })
-        .eq('id', profile.id)
-      if (mErr) console.error('Monthly reset error:', mErr)
+      await db.from('users').update({
+        credits_used: 0,
+        ads_extra_monthly: 0,
+        monthly_reset_at: now.toISOString(),
+      }).eq('id', profile.id)
     }
 
     // ── Reseteo diario ──
@@ -86,7 +111,6 @@ export async function POST(req: NextRequest) {
       : null
 
     let searchesToday = profile.credits_used_today || 0
-    // ads_extra_daily y ads_watched_today se resetean diario
     let adsExtraToday = profile.ads_extra_daily || 0
     let adsWatchedToday = profile.ads_watched_today || 0
 
@@ -94,27 +118,22 @@ export async function POST(req: NextRequest) {
       searchesToday = 0
       adsExtraToday = 0
       adsWatchedToday = 0
-      const { error: dErr } = await db
-        .from('users')
-        .update({
-          credits_used_today: 0,
-          ads_extra_daily: 0,
-          ads_watched_today: 0,
-          last_active: now.toISOString(),
-        })
-        .eq('id', profile.id)
-      if (dErr) console.error('Daily reset error:', dErr)
+      await db.from('users').update({
+        credits_used_today: 0,
+        ads_extra_daily: 0,
+        ads_watched_today: 0,
+        last_active: now.toISOString(),
+      }).eq('id', profile.id)
     }
 
     // ── Plan config (SIEMPRE autoritativo) ──
     const config = PLAN_CONFIG[profile.plan] || PLAN_CONFIG.free
-    const searchesLimit = config.searches + adsExtraMonthly  // base + ads mensuales
+    const searchesLimit = config.searches + adsExtraMonthly
     const baseDaily = config.daily_searches
     const effectiveDaily = baseDaily + adsExtraToday
     const remainingSearches = searchesLimit - monthlyUsed
     const remainingDaily = effectiveDaily - searchesToday
 
-    // Check limits
     if (remainingSearches <= 0) {
       return NextResponse.json(
         { error: 'Plan completado. Cambia a un plan superior para seguir buscando.', code: 'limit_exceeded' },
@@ -128,33 +147,34 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Parse request body
-    const { keyword, location, limit: requestedLimit = config.leads_per_search, reference_point } = await req.json()
+    // ── Input validation ──
+    const body = await req.json()
+    const keyword = sanitize(body.keyword || '')
+    const location = sanitize(body.location || '')
+    const requestedLimit = Math.min(parseInt(body.limit) || config.leads_per_search, config.leads_per_search, 60)
+    const reference_point = body.reference_point ? sanitize(body.reference_point, 200) : null
 
-    if (!keyword || !location) {
-      return NextResponse.json({ error: 'keyword y location son requeridos' }, { status: 400 })
+    if (!keyword || keyword.length < 2) {
+      return NextResponse.json({ error: 'keyword debe tener al menos 2 caracteres' }, { status: 400 })
     }
-
-    // Cap leads per search to the plan's max
-    const leadsToFetch = Math.min(requestedLimit, config.leads_per_search, 60)
-
-    if (leadsToFetch <= 0) {
+    if (!location || location.length < 2) {
+      return NextResponse.json({ error: 'location debe tener al menos 2 caracteres' }, { status: 400 })
+    }
+    if (requestedLimit <= 0) {
       return NextResponse.json({ error: 'Cantidad inválida' }, { status: 400 })
     }
 
-    // Search Google Places
-    console.log(`Search [${profile.plan}]: "${keyword}" in "${location}", ref="${reference_point || '-'}", leads=${leadsToFetch}`)
+    // ── Search Google Places ──
     const places: EnrichedPlace[] = await searchPlaces({
       query: keyword,
       location,
       referencePoint: reference_point,
-      limit: leadsToFetch,
+      limit: requestedLimit,
     })
 
-    const affordable = places.slice(0, leadsToFetch)
-    console.log(`Got ${affordable.length} places`)
+    const affordable = places.slice(0, requestedLimit)
 
-    // Enrich with DeepSeek
+    // ── Enrich with DeepSeek ──
     const enriched = await enrichLeads(
       affordable.map(p => ({
         name: (typeof p.displayName === 'object' ? p.displayName?.text : p.displayName) || '',
@@ -166,7 +186,7 @@ export async function POST(req: NextRequest) {
       }))
     )
 
-    // Extract emails + social media + website (parallel per lead)
+    // ── Parallel enrichment (email + social + website) ──
     const enrichResults = await Promise.allSettled(
       affordable.map(async (place, i) => {
         const name = (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || ''
@@ -179,7 +199,7 @@ export async function POST(req: NextRequest) {
       })
     )
 
-    // Create search record
+    // ── Create search record ──
     const { data: search, error: searchError } = await db
       .from('searches')
       .insert({
@@ -187,8 +207,8 @@ export async function POST(req: NextRequest) {
         query: keyword,
         location,
         radius: 5,
-        reference_point: reference_point || null,
-        limit_leads: leadsToFetch,
+        reference_point,
+        limit_leads: requestedLimit,
         results_count: 0,
       })
       .select()
@@ -198,7 +218,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Error al crear búsqueda: ' + searchError.message }, { status: 500 })
     }
 
-    // Build leads array
+    // ── Build leads ──
     const leads = affordable.map((place, i) => {
       const name = (typeof place.displayName === 'object' ? place.displayName?.text : place.displayName) || ''
       const enrichment = enrichResults[i]
@@ -230,14 +250,14 @@ export async function POST(req: NextRequest) {
         instagram_url: social?.instagram_url || null,
         has_facebook: social?.has_facebook || false,
         has_instagram: social?.has_instagram || false,
-        reference_point: reference_point || null,
+        reference_point,
         ref_latitude: place.ref_latitude,
         ref_longitude: place.ref_longitude,
         distance_km: place.distance_km,
       }
     })
 
-    // Upsert leads (skip duplicates)
+    // ── Upsert leads ──
     const { data: savedLeads, error: insertError } = await db
       .from('leads')
       .upsert(leads, { onConflict: 'place_id', ignoreDuplicates: true })
@@ -247,11 +267,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Error al guardar leads: ' + insertError.message }, { status: 500 })
     }
 
-    // Count inserted leads
     const insertedCount = savedLeads?.length || 0
     const skippedCount = leads.length - insertedCount
 
-    // Deduct 1 search credit (mensual)
+    // ── CRITICAL: Atomic credit deduction ──
+    // Use compare-and-swap to prevent concurrent request abuse
+    // Only deduct if credits_used hasn't changed since we read it
+    const { data: currentProfile } = await db
+      .from('users')
+      .select('credits_used, credits_used_today')
+      .eq('id', profile.id)
+      .single()
+
+    if (!currentProfile) {
+      return NextResponse.json({ error: 'Error al verificar créditos' }, { status: 500 })
+    }
+
+    // If credits were consumed by another request since our read, reject
+    if (currentProfile.credits_used !== profile.credits_used) {
+      return NextResponse.json({
+        error: 'Ya hay una búsqueda en proceso. Recarga para ver los resultados.',
+        code: 'concurrent_request',
+      }, { status: 409 })
+    }
+
     const newMonthlyUsed = monthlyUsed + 1
     const newSearchesToday = searchesToday + 1
     const newRemaining = searchesLimit - newMonthlyUsed

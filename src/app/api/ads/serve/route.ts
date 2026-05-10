@@ -1,30 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// Adsterra ad serving endpoint
-// Returns HTML snippet that loads an Adsterra banner ad
-// Zone format: user sets ADSTERRA_ZONE env var (from dashboard)
-// Falls back to API-key based serving if no zone configured
-
-const ADSTERRA_UID = process.env.ADSTERRA_API_KEY || ''
-const ADSTERRA_ZONE = process.env.ADSTERRA_ZONE || ''
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
 
 export async function GET(req: NextRequest) {
-  const format = req.nextUrl.searchParams.get('format') || 'banner'
-  const width = parseInt(req.nextUrl.searchParams.get('width') || '300')
-  const height = parseInt(req.nextUrl.searchParams.get('height') || '250')
+  const format = escapeHtml(req.nextUrl.searchParams.get('format') || 'banner')
+  const widthParam = req.nextUrl.searchParams.get('width') || '300'
+  const heightParam = req.nextUrl.searchParams.get('height') || '250'
+
+  // Strict numeric validation for width/height
+  const width = /^\d+$/.test(widthParam) ? parseInt(widthParam) : 300
+  const height = /^\d+$/.test(heightParam) ? parseInt(heightParam) : 250
+
+  const ADSTERRA_UID = process.env.ADSTERRA_API_KEY || ''
+  const ADSTERRA_ZONE = process.env.ADSTERRA_ZONE || ''
 
   if (ADSTERRA_ZONE) {
-    // Serve using zone ID (from dashboard placement)
+    const safeZone = escapeHtml(ADSTERRA_ZONE)
+    const safeUid = escapeHtml(ADSTERRA_UID)
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>*{margin:0;padding:0;box-sizing:border-box}body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif}</style>
 </head><body>
 <script type="text/javascript">
-  var adsterra_zone = '${ADSTERRA_ZONE}';
+  var adsterra_zone = '${safeZone.replace(/'/g, "\\'")}';
   var adsterra_banner = '${Math.random().toString(36).slice(2, 8)}';
   var adsterra_width = ${width};
   var adsterra_height = ${height};
-  var adsterra_uid = '${ADSTERRA_UID}';
+  var adsterra_uid = '${safeUid.replace(/'/g, "\\'")}';
 </script>
 <script type="text/javascript" src="//app.adsterra.com/js/ad.js" defer></script>
 </body></html>`
@@ -32,18 +41,20 @@ export async function GET(req: NextRequest) {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'X-Frame-Options': 'ALLOWALL',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "frame-ancestors *",
       },
     })
   }
 
   if (ADSTERRA_UID) {
-    // Serve using API key only (no zone) — Adsterra fallback
+    const safeUid = escapeHtml(ADSTERRA_UID)
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>*{margin:0;padding:0;box-sizing:border-box}body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif;flex-direction:column;gap:8px;padding:8px}</style>
 </head><body>
 <script type="text/javascript">
-  var uid = '${ADSTERRA_UID}';
+  var uid = '${safeUid.replace(/'/g, "\\'")}';
   var width = ${width};
   var height = ${height};
 </script>
@@ -54,11 +65,13 @@ export async function GET(req: NextRequest) {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'X-Frame-Options': 'ALLOWALL',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "frame-ancestors *",
       },
     })
   }
 
-  // Fallback: show placeholder
+  // Fallback
   const fallback = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>*{margin:0;padding:0;box-sizing:border-box}body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;font-family:sans-serif;flex-direction:column;gap:8px}</style>
@@ -73,6 +86,8 @@ export async function GET(req: NextRequest) {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
       'X-Frame-Options': 'ALLOWALL',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "frame-ancestors *",
     },
   })
 }

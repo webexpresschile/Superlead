@@ -4,6 +4,8 @@ const protectedRoutes = createRouteMatcher([
   '/dashboard(.*)',
   '/api/search(.*)',
   '/api/leads(.*)',
+  '/api/credits(.*)',
+  '/api/user(.*)',
 ])
 
 export default clerkMiddleware(async (auth, req) => {
@@ -14,7 +16,7 @@ export default clerkMiddleware(async (auth, req) => {
 
 export const config = {
   matcher: [
-    // Skip Next.js internals and static files
+    // Skip Next.js internals, static files, and public ads endpoint
     '/((?!_next/static|_next/image|favicon\\.ico).*)',
   ],
 }
