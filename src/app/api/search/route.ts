@@ -37,6 +37,7 @@ export async function POST(req: NextRequest) {
           email: 'pending@update.com',
           name: 'User',
           plan: 'free',
+          monthly_reset_at: new Date().toISOString(),
           credits_used: 0,
           credits_limit: config.searches,
           credits_used_today: 0,
@@ -53,38 +54,64 @@ export async function POST(req: NextRequest) {
 
     if (!profile) throw new Error('No se pudo crear el perfil')
 
-    // Reset counters if new day
-    const today = new Date().toDateString()
+    // ── Reseteo mensual ──
+    const now = new Date()
+    const thisMonth = `${now.getFullYear()}-${now.getMonth()}`
+    const lastMonthReset = profile.monthly_reset_at
+      ? `${new Date(profile.monthly_reset_at).getFullYear()}-${new Date(profile.monthly_reset_at).getMonth()}`
+      : null
+
+    let monthlyUsed = profile.credits_used || 0
+    let adsExtraMonthly = profile.ads_extra_monthly || 0
+
+    if (lastMonthReset !== thisMonth) {
+      // Nuevo mes → resetear contadores mensuales
+      monthlyUsed = 0
+      adsExtraMonthly = 0
+      const { error: mErr } = await db
+        .from('users')
+        .update({
+          credits_used: 0,
+          ads_extra_monthly: 0,
+          monthly_reset_at: now.toISOString(),
+        })
+        .eq('id', profile.id)
+      if (mErr) console.error('Monthly reset error:', mErr)
+    }
+
+    // ── Reseteo diario ──
+    const todayStr = now.toDateString()
     const lastActive = profile.last_active
       ? new Date(profile.last_active).toDateString()
       : null
 
     let searchesToday = profile.credits_used_today || 0
-    let adsExtra = profile.ads_extra_daily || 0
-    let adsWatched = profile.ads_watched_today || 0
+    // ads_extra_daily y ads_watched_today se resetean diario
+    let adsExtraToday = profile.ads_extra_daily || 0
+    let adsWatchedToday = profile.ads_watched_today || 0
 
-    if (!lastActive || lastActive !== today) {
+    if (!lastActive || lastActive !== todayStr) {
       searchesToday = 0
-      adsExtra = 0
-      adsWatched = 0
-      const { error: resetErr } = await db
+      adsExtraToday = 0
+      adsWatchedToday = 0
+      const { error: dErr } = await db
         .from('users')
         .update({
           credits_used_today: 0,
           ads_extra_daily: 0,
           ads_watched_today: 0,
-          last_active: new Date().toISOString(),
+          last_active: now.toISOString(),
         })
         .eq('id', profile.id)
-      if (resetErr) console.error('Reset error:', resetErr)
+      if (dErr) console.error('Daily reset error:', dErr)
     }
 
-    // Plan config — SIEMPRE autoritativo, ignora valores viejos en DB
+    // ── Plan config (SIEMPRE autoritativo) ──
     const config = PLAN_CONFIG[profile.plan] || PLAN_CONFIG.free
-    const searchesLimit = config.searches
+    const searchesLimit = config.searches + adsExtraMonthly  // base + ads mensuales
     const baseDaily = config.daily_searches
-    const effectiveDaily = baseDaily + adsExtra
-    const remainingSearches = searchesLimit - (profile.credits_used || 0)
+    const effectiveDaily = baseDaily + adsExtraToday
+    const remainingSearches = searchesLimit - monthlyUsed
     const remainingDaily = effectiveDaily - searchesToday
 
     // Check limits
@@ -224,16 +251,17 @@ export async function POST(req: NextRequest) {
     const insertedCount = savedLeads?.length || 0
     const skippedCount = leads.length - insertedCount
 
-    // Deduct 1 search credit (no por lead)
-    const newTotalSearch = (profile.credits_used || 0) + 1
+    // Deduct 1 search credit (mensual)
+    const newMonthlyUsed = monthlyUsed + 1
     const newSearchesToday = searchesToday + 1
+    const newRemaining = searchesLimit - newMonthlyUsed
 
     await Promise.all([
       db.from('searches').update({ results_count: insertedCount }).eq('id', search.id),
       db.from('users').update({
-        credits_used: newTotalSearch,
+        credits_used: newMonthlyUsed,
         credits_used_today: newSearchesToday,
-        last_active: new Date().toISOString(),
+        last_active: now.toISOString(),
       }).eq('id', profile.id),
     ])
 
@@ -245,13 +273,14 @@ export async function POST(req: NextRequest) {
       leads: savedLeads,
       plan: {
         name: profile.plan,
-        searches_used: newTotalSearch,
+        searches_used: newMonthlyUsed,
         searches_limit: searchesLimit,
         searches_today: newSearchesToday,
         daily_limit: effectiveDaily,
         base_daily: baseDaily,
-        ads_extra: adsExtra,
-        searches_remaining: searchesLimit - newTotalSearch,
+        ads_extra: adsExtraToday,
+        ads_monthly: adsExtraMonthly,
+        searches_remaining: newRemaining,
         leads_per_search: config.leads_per_search,
       },
     })
