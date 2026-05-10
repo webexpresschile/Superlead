@@ -100,11 +100,11 @@ export default function Dashboard() {
     const data = await res.json()
     if (data.leads) setLeads(data.leads)
 
-    const { data: prof } = await supabase
-      .from('users')
-      .select('plan, credits_used, credits_used_today, ads_watched_today, ads_extra_daily, ads_extra_monthly')
-      .eq('auth_id', user?.id)
-      .single()
+    const profRes = await fetch('/api/user/profile', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!profRes.ok) return
+    const prof = await profRes.json()
     if (prof) {
       const planInfo = PLAN_CONFIG[prof.plan] || PLAN_CONFIG.free
       const adExtraMonthly = prof.ads_extra_monthly ?? 0
