@@ -61,6 +61,29 @@ export default function Dashboard() {
   const [adCountdown, setAdCountdown] = useState(15)
   const [adMessage, setAdMessage] = useState('')
 
+  // Filters
+  const [filterCategory, setFilterCategory] = useState('')
+  const [filterCompetition, setFilterCompetition] = useState('')
+  const [filterSearch, setFilterSearch] = useState('')
+
+  // Extract unique categories from leads
+  const categories = [...new Set(leads.map(l => l.enriched_category).filter(Boolean))].sort() as string[]
+  const competitionLevels = ['Alto', 'Medio', 'Bajo']
+
+  // Apply filters
+  const filteredLeads = leads.filter(l => {
+    if (filterCategory && l.enriched_category !== filterCategory) return false
+    if (filterCompetition && l.competition_level !== filterCompetition) return false
+    if (filterSearch) {
+      const q = filterSearch.toLowerCase()
+      const matchName = l.name?.toLowerCase().includes(q)
+      const matchPhone = l.phone?.toLowerCase().includes(q)
+      const matchEmail = l.email?.toLowerCase().includes(q)
+      if (!matchName && !matchPhone && !matchEmail) return false
+    }
+    return true
+  })
+
   useEffect(() => {
     if (isSignedIn) { loadData() }
   }, [isSignedIn])
@@ -176,10 +199,14 @@ export default function Dashboard() {
   async function handleExport() {
     const token = await getToken()
     if (!token) return
+    const body: any = { format: 'csv' }
+    if (filterCategory) body.category = filterCategory
+    if (filterCompetition) body.competition = filterCompetition
+    if (filterSearch) body.q = filterSearch
     const res = await fetch('/api/leads/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ format: 'csv' }),
+      body: JSON.stringify(body),
     })
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
@@ -387,14 +414,54 @@ export default function Dashboard() {
         {/* Leads Table */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Leads ({leads.length})</CardTitle>
+            <CardTitle>Leads ({filteredLeads.length})</CardTitle>
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="w-4 h-4 mr-2" /> Exportar CSV
             </Button>
           </CardHeader>
           <CardContent>
+            {/* Filters */}
+            {leads.length > 0 && (
+              <div className="flex flex-wrap items-center gap-3 mb-4 pb-4 border-b border-gray-100">
+                <div className="relative flex-1 min-w-[180px] max-w-xs">
+                  <input
+                    type="text"
+                    placeholder="Buscar por nombre, teléfono o email..."
+                    value={filterSearch}
+                    onChange={e => setFilterSearch(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  />
+                </div>
+                <select
+                  value={filterCategory}
+                  onChange={e => setFilterCategory(e.target.value)}
+                  className="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                >
+                  <option value="">Todas las categorías</option>
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select
+                  value={filterCompetition}
+                  onChange={e => setFilterCompetition(e.target.value)}
+                  className="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                >
+                  <option value="">Toda competencia</option>
+                  {competitionLevels.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                {(filterCategory || filterCompetition || filterSearch) && (
+                  <button
+                    onClick={() => { setFilterCategory(''); setFilterCompetition(''); setFilterSearch('') }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    Limpiar filtros
+                  </button>
+                )}
+              </div>
+            )}
             {leads.length === 0 ? (
               <p className="text-center text-gray-400 py-12">Busca tu primer lead para empezar</p>
+            ) : filteredLeads.length === 0 ? (
+              <p className="text-center text-gray-400 py-12">Ningún lead coincide con los filtros</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -412,7 +479,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {leads.map((lead) => (
+                    {filteredLeads.map((lead) => (
                       <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50">
                         <td className="py-3 font-medium">{lead.name}</td>
                         <td className="py-3">{lead.phone ? <a href={`tel:${lead.phone}`} className="text-blue-600 hover:underline">{lead.phone}</a> : '-'}</td>

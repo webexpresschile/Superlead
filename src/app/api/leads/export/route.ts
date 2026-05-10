@@ -19,10 +19,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Usuario no encontrado' }, { status: 404 })
     }
 
-    const { search_id, format = 'json' } = await req.json()
+    const { search_id, format = 'json', category, competition, q } = await req.json()
 
     let query = db.from('leads').select('*').eq('user_id', user.id)
     if (search_id) query = query.eq('search_id', search_id)
+    if (category) query = query.eq('enriched_category', category)
+    if (competition) query = query.eq('competition_level', competition)
+    if (q) query = query.ilike('name', `%${q}%`)
 
     const { data: leads, error } = await query.order('created_at', { ascending: false })
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -69,7 +72,7 @@ export async function POST(req: NextRequest) {
       return new NextResponse(csvRows, {
         headers: {
           'Content-Type': 'text/csv; charset=utf-8',
-          'Content-Disposition': 'attachment; filename="superlead-leads.csv"',
+          'Content-Disposition': `attachment; filename="superlead-leads-${category || 'todos'}-${competition || 'todos'}.csv"`,
         },
       })
     }
