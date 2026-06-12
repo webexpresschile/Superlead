@@ -14,6 +14,7 @@ const PLAN_CONFIG: Record<string, { name: string; searches: number; leads_per_se
   starter: { name: 'Starter', searches: 10,  leads_per_search: 20,  daily_searches: 3 },
   pro:     { name: 'Pro',     searches: 20,  leads_per_search: 50,  daily_searches: 5 },
   agency:  { name: 'Agency',  searches: 30,  leads_per_search: 100, daily_searches: 10 },
+  unlimited: { name: '∞ Ilimitado', searches: 999999, leads_per_search: 200, daily_searches: 999999 },
 }
 
 interface Lead {

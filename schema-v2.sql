@@ -15,6 +15,7 @@ BEGIN
       WHEN 'starter' THEN 200
       WHEN 'pro' THEN 1000
       WHEN 'agency' THEN 5000
+      WHEN 'unlimited' THEN 999999
       ELSE 50
     END,
     CASE p_plan
@@ -22,6 +23,7 @@ BEGIN
       WHEN 'starter' THEN 7
       WHEN 'pro' THEN 30
       WHEN 'agency' THEN 150
+      WHEN 'unlimited' THEN 999999
       ELSE 7
     END;
 END;

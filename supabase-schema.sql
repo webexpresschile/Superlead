@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS public.users (
   auth_id UUID UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT UNIQUE NOT NULL,
   name TEXT,
-  plan TEXT DEFAULT 'free' CHECK (plan IN ('free', 'starter', 'pro', 'agency')),
+  plan TEXT DEFAULT 'free' CHECK (plan IN ('free', 'starter', 'pro', 'agency', 'unlimited')),
   credits_used INT DEFAULT 0,
   credits_limit INT DEFAULT 50,
   lemon_customer_id TEXT,
